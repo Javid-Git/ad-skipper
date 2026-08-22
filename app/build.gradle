@@ -42,6 +42,14 @@ android {
 // variant's runtime classpath. This project is pure Java, so that would package
 // ~2.4 MB of Kotlin dex that nothing ever calls. Excluding the dependency drops
 // it without android.builtInKotlin=false, which AGP has already deprecated.
-configurations.configureEach {
+//
+// Scoped to the variant classpaths on purpose. A blanket
+// configurations.configureEach also strips kotlin-stdlib from AGP's internal
+// lintClassPath, and lint then dies with "Could not initialize class
+// ...KotlinCoreEnvironment" — which only shows up on assembleRelease, since
+// lintVital does not run for debug builds.
+configurations.matching {
+    it.name.endsWith('RuntimeClasspath') || it.name.endsWith('CompileClasspath')
+}.configureEach {
     exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib'
 }
