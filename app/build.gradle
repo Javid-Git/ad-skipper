@@ -1,0 +1,47 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace = 'dev.javid.adskipper'
+    compileSdk = 36
+    buildToolsVersion = '36.1.0'
+
+    defaultConfig {
+        applicationId = 'dev.javid.adskipper'
+        // 26 is the floor for XML-only adaptive launcher icons, which is why
+        // this project ships no PNG assets at all.
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 1
+        versionName = '1.0'
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled = false
+        }
+        release {
+            // Left unminified on purpose: an accessibility service is easier to
+            // debug against YouTube UI changes when stack traces are readable,
+            // and this build is never published.
+            minifyEnabled = false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+// No dependencies. Everything used here is in the Android platform itself.
+//
+// AGP 9 enables built-in Kotlin support, which puts kotlin-stdlib on every
+// variant's runtime classpath. This project is pure Java, so that would package
+// ~2.4 MB of Kotlin dex that nothing ever calls. Excluding the dependency drops
+// it without android.builtInKotlin=false, which AGP has already deprecated.
+configurations.configureEach {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib'
+}

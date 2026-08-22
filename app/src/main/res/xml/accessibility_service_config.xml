@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Scopes the service as tightly as the platform allows.
+
+    packageNames        - the service is only ever woken for YouTube. Events from
+                          every other app on the device never reach it.
+    accessibilityFlags  - flagReportViewIds populates getViewIdResourceName(),
+                          which is the most stable way to spot the skip button.
+                          flagIncludeNotImportantViews is needed because the
+                          clickable ancestor of the label is sometimes marked
+                          not-important-for-accessibility, which would otherwise
+                          hide it from the node tree entirely.
+    notificationTimeout - coalesces YouTube's very chatty content-change events
+                          in the framework before they ever reach us.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowContentChanged|typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:packageNames="com.google.android.youtube"
+    android:settingsActivity="dev.javid.adskipper.MainActivity" />

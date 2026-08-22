@@ -1,0 +1,14 @@
+# Normalise line endings so a clone works on any platform.
+* text=auto eol=lf
+
+# cmd.exe mis-parses batch files that arrive with LF endings.
+*.bat text eol=crlf
+
+# The wrapper script must be LF, or Linux/macOS shells reject the shebang
+# with "bad interpreter" — a classic failure when a repo is authored on Windows.
+gradlew text eol=lf
+
+# Never touch these.
+*.jar binary
+*.apk binary
+*.keystore binary

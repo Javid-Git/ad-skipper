@@ -1,0 +1,37 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+// AGP 9.x needs Gradle 9.x. An older `gradle` on PATH otherwise fails deep
+// inside plugin application with a stack trace that does not name the real
+// cause, so check up front and say what to do.
+def runningGradle = org.gradle.util.GradleVersion.current()
+def minimumGradle = org.gradle.util.GradleVersion.version('9.0')
+if (runningGradle < minimumGradle) {
+    throw new GradleException("""
+
+Ad Skipper needs Gradle ${minimumGradle.version} or newer, because it builds with AGP 9.x.
+
+  You are running: ${runningGradle.version}
+
+The wrapper pins a known-good version, so the simplest fix is to use it:
+
+  gradlew.bat assembleDebug     (Windows)
+  ./gradlew assembleDebug       (macOS / Linux)
+""")
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'AdSkipper'
+include ':app'

@@ -1,0 +1,26 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# Machine-specific: holds the absolute SDK path
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+captures/
+.cxx/
+.externalNativeBuild/
+
+# Build outputs and signing material. An accessibility service has real
+# system privileges, so never commit a built or signed artifact.
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# OS cruft
+.DS_Store
+Thumbs.db
+local.properties

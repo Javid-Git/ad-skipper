@@ -1,0 +1,9 @@
+// Top-level build file. The Android Gradle Plugin version is pinned here and
+// applied in :app.
+//
+// AGP 9.x requires Gradle 9.x. Keep this in step with the wrapper version in
+// gradle/wrapper/gradle-wrapper.properties so that building through the wrapper
+// and building with a `gradle` on PATH behave identically.
+plugins {
+    id 'com.android.application' version '9.3.1' apply false
+}

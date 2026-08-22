@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Double-chevron "skip forward" glyph, drawn as a vector so the project needs
+    no PNG assets at any density. Sized to the 108dp adaptive-icon canvas with
+    the artwork kept inside the inner 72dp safe zone.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M34,38 L52,54 L34,70 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M52,38 L70,54 L52,70 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M73,38 L77,38 L77,70 L73,70 Z" />
+</vector>
