@@ -15,6 +15,11 @@
         finding it already on, and concluding the app is lying.
     -->
     <string name="status_not_running">Service was stopped by the system. Accessibility settings will still show Ad Skipper as ON — turn it off and back on again to restart it.</string>
+    <!--
+        Connected, but Android is refusing it any window content. Looks healthy
+        everywhere else, which is why it needs saying here.
+    -->
+    <string name="status_blind">Service is running but Android is not letting it read the screen, so no ads will be skipped. Turn Ad Skipper off and back on in Accessibility settings.</string>
 
     <string name="setup_instructions">Android does not let an app switch on its own accessibility service, so this last step is manual:\n\nSettings &gt; Accessibility &gt; Installed apps &gt; Ad Skipper &gt; On</string>
 
@@ -23,6 +28,32 @@
     <string name="open_accessibility_settings">Open Accessibility settings</string>
     <string name="open_app_info">Open App info (battery settings)</string>
     <string name="app_info_unavailable">Could not open App info on this device. Open Settings &gt; Apps and find Ad Skipper.</string>
+    <string name="battery_settings_unavailable">Could not open battery optimisation settings. Open App info and remove any battery restriction on Ad Skipper.</string>
+    <string name="notification_settings_unavailable">Could not open notification settings. Open App info &gt; Notifications and allow them for Ad Skipper.</string>
+
+    <!-- Setup gate. -->
+    <string name="preflight_heading">Setup checks</string>
+    <string name="preflight_row_pass">✔  %1$s</string>
+    <string name="preflight_row_fail">✘  %1$s</string>
+    <string name="preflight_fix">Fix this</string>
+    <string name="preflight_youtube">The YouTube app is installed</string>
+    <string name="preflight_notifications">Notifications are allowed (needed to warn you when it stops)</string>
+    <string name="preflight_battery">Battery restrictions are removed</string>
+
+    <string name="preflight_attest_heading">Step this app cannot check</string>
+    <string name="preflight_attest">I have allowed Ad Skipper to keep running in the background on this device</string>
+    <!--
+        Stated outright. Background-execution permissions are vendor app-ops
+        with no public API, and whether an app is pinned in Recents has no API
+        at all. A tick the app cannot back up would be trusted as though it
+        were a real check.
+    -->
+    <string name="preflight_attest_note">This app cannot verify this — Android provides no way to read it. Ticking this is your confirmation, not a check the app has performed.</string>
+
+    <string name="preflight_gate_blocked">Accessibility cannot be enabled from here until the checks above pass. Turning the service on before the device is set up to keep it running produces an app that works briefly and then stops silently.</string>
+    <string name="preflight_gate_open">All checks passed. You can now enable the accessibility service.</string>
+
+    <string name="status_not_configured">Service is running, but setup is incomplete — it will stop working without warning. Finish the checks below.</string>
 
     <!-- Keep-alive foreground service. -->
     <string name="keep_alive_channel_name">Service running</string>
@@ -31,15 +62,21 @@
     <string name="keep_alive_text">Watching YouTube for skippable ads.</string>
 
     <!--
-        Per-vendor keep-alive instructions, selected by Build.MANUFACTURER.
-        Deliberately text, not deep links: vendor settings activities are
-        renamed between OS versions and are often not exported, so a hardcoded
-        intent fails where instructions merely need re-reading.
+        Shown when the service is connected but the platform serves it no
+        window content, so it cannot see the screen and nothing will be
+        skipped. Says so plainly: a notification that claims to be working
+        while it is not costs more trust than it saves.
     -->
-    <string name="vendor_tips_xiaomi">Keeping it running on Xiaomi/Redmi/POCO:\n\n1. Open Recents, pull down on the Ad Skipper card, and tap the padlock. Locked apps survive one-key clean and swipe-up clear — this is the important one.\n2. Security app &gt; Permissions &gt; Autostart &gt; enable Ad Skipper.\n3. App info &gt; Battery saver &gt; No restrictions.</string>
-    <string name="vendor_tips_samsung">Keeping it running on Samsung:\n\n1. Settings &gt; Battery &gt; Background usage limits &gt; Never sleeping apps &gt; add Ad Skipper.\n2. App info &gt; Battery &gt; Unrestricted.\n3. Make sure Ad Skipper is not listed under Deep sleeping apps.</string>
-    <string name="vendor_tips_oppo">Keeping it running on OnePlus/OPPO/realme:\n\n1. App info &gt; Battery usage &gt; Allow background activity, and set battery optimisation to Don\'t optimise.\n2. Recents &gt; long-press the Ad Skipper card &gt; Lock.\n3. Settings &gt; Battery &gt; turn off Sleep standby optimisation if present.</string>
-    <string name="vendor_tips_huawei">Keeping it running on Huawei/Honor:\n\n1. Settings &gt; Battery &gt; App launch &gt; Ad Skipper &gt; Manage manually, and enable all three switches.\n2. Recents &gt; swipe down on the Ad Skipper card to lock it.</string>
-    <string name="vendor_tips_vivo">Keeping it running on vivo/iQOO:\n\n1. Settings &gt; Battery &gt; High background power consumption &gt; allow Ad Skipper.\n2. Settings &gt; Apps &gt; Autostart &gt; enable Ad Skipper.\n3. Recents &gt; lock the Ad Skipper card.</string>
-    <string name="vendor_tips_generic">Keeping it running:\n\nIf ads stop being skipped, your device is stopping the service in the background. Open App info below and remove any battery restriction on Ad Skipper, then lock it in Recents if your device offers that.\n\nStock Android re-starts the service by itself, so this mostly affects vendor ROMs. dontkillmyapp.com lists the exact steps per brand.</string>
+    <string name="keep_alive_title_inactive">Ad Skipper is INACTIVE</string>
+    <string name="keep_alive_text_inactive">Android is not letting it read the screen, so no ads will be skipped. Turn Ad Skipper off and back on in Accessibility settings. If it keeps happening, allow the app to run in the background without restriction. Tap here to open the app.</string>
+
+    <string name="keep_alive_title_unconfigured">Ad Skipper is NOT CONFIGURED</string>
+    <string name="keep_alive_text_unconfigured">The service is running, but the setup checks have not been completed, so it will stop working without warning. Tap here to finish setup.</string>
+
+    <!--
+        Background-execution guidance. Deliberately device-agnostic: vendor
+        menu names move between OS versions, so naming them dates badly and
+        misleads anyone on a build that renamed them.
+    -->
+    <string name="background_tips">Some Android devices stop background apps to save power. If ads stop being skipped, open App info below and allow Ad Skipper to run in the background without restriction. If your device lets you lock an app in Recents, lock this one too.\n\nOn stock Android the system restarts the service by itself and none of this is needed.</string>
 </resources>

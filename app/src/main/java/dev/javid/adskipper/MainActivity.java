@@ -13,27 +13,41 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.TextUtils;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityManager;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.List;
-import java.util.Locale;
 
 /**
- * Single screen whose only job is to report whether the skip service is running
- * and to open the settings pages where it can be turned on and kept alive.
+ * Status screen and setup gate.
  *
- * <p>Android deliberately gives an app no way to enable its own accessibility
- * service, so this screen can lead the user there but not do it for them.
+ * <p>The screen will not hand over the route to Accessibility settings until
+ * every precondition in {@link Preflight} holds. Turning the service on before
+ * the device is set up to keep it running is how you end up with an app that
+ * works for ten minutes and then silently stops — which is worse than one that
+ * never started, because you stop checking.
+ *
+ * <p>The gate covers this screen only. It cannot prevent someone enabling the
+ * service directly in system Settings, and does not try to; that route is
+ * detected instead, and reported as {@link KeepAliveService.Status#NOT_CONFIGURED}
+ * in the notification.
  */
 public class MainActivity extends Activity {
 
     private static final int REQUEST_POST_NOTIFICATIONS = 1;
 
     private TextView statusView;
-    private TextView vendorTipsView;
+    private TextView gateExplanationView;
+    private LinearLayout checklistView;
+    private CheckBox attestView;
+    private Button openSettingsButton;
 
     /** Asked at most once per launch, so returning from Settings does not nag. */
     private boolean notificationPermissionRequested;
@@ -44,47 +58,106 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         statusView = findViewById(R.id.status);
-        vendorTipsView = findViewById(R.id.vendor_tips);
+        gateExplanationView = findViewById(R.id.gate_explanation);
+        checklistView = findViewById(R.id.checklist);
+        attestView = findViewById(R.id.attest);
+        openSettingsButton = findViewById(R.id.open_settings);
 
-        Button openSettings = findViewById(R.id.open_settings);
-        openSettings.setOnClickListener(v -> openAccessibilitySettings());
+        openSettingsButton.setOnClickListener(v -> openAccessibilitySettings());
+        findViewById(R.id.open_app_info).setOnClickListener(v -> openAppInfo());
 
-        Button openAppInfo = findViewById(R.id.open_app_info);
-        openAppInfo.setOnClickListener(v -> openAppInfo());
-
-        vendorTipsView.setText(vendorTipsRes());
+        attestView.setOnCheckedChangeListener((v, checked) -> {
+            Preflight.setAttested(this, checked);
+            refresh();
+        });
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        // Re-read on every resume so returning from Settings reflects the change.
-        boolean running = isServiceBound();
-        statusView.setText(statusTextRes(running));
+        // Re-read everything on every resume, so returning from any settings
+        // screen reflects what was just changed.
+        refresh();
 
-        if (running) {
+        if (isServiceBound()) {
+            maybeRequestNotificationPermission();
             // Retry path for the keep-alive: a start from the accessibility
             // service can be refused under Android 12's background-start rules,
             // but a start from a resumed activity never is.
-            maybeRequestNotificationPermission();
             KeepAliveService.start(this);
         }
     }
 
+    private void refresh() {
+        boolean bound = isServiceBound();
+        statusView.setText(statusTextRes(bound));
+
+        attestView.setChecked(Preflight.isAttested(this));
+        buildChecklist();
+
+        // The gate. Everything verifiable has to pass and the two unverifiable
+        // steps have to be confirmed before this screen will lead anyone to the
+        // switch that turns the service on.
+        boolean configured = Preflight.isConfigured(this);
+        openSettingsButton.setEnabled(configured);
+        gateExplanationView.setText(configured
+                ? R.string.preflight_gate_open
+                : R.string.preflight_gate_blocked);
+    }
+
+    /** Rebuilds the checklist rows from a fresh evaluation. */
+    private void buildChecklist() {
+        checklistView.removeAllViews();
+        addRow(R.string.preflight_youtube, Preflight.isYouTubeInstalled(this), null);
+        addRow(R.string.preflight_notifications, Preflight.areNotificationsUsable(this),
+                v -> openNotificationSettings());
+        addRow(R.string.preflight_battery, Preflight.isBatteryUnrestricted(this),
+                v -> openBatterySettings());
+    }
+
     /**
-     * Three states, because "enabled" and "running" are different facts and the
-     * gap between them is this app's most confusing failure mode.
-     *
-     * <p>{@code ENABLED_ACCESSIBILITY_SERVICES} is a persisted setting: it
-     * records the user's consent and survives the process being killed, which
-     * is why Accessibility settings can still show the toggle as on. The
-     * binding is what actually does the work, and a vendor cleaner can destroy
-     * it without touching the setting. When the two disagree, say so plainly
-     * rather than reporting a bare "off" that the settings screen contradicts.
+     * One row: a pass/fail marker, the requirement, and — when it is failing
+     * and there is somewhere to send the user — a button that goes straight
+     * there.
      */
-    private int statusTextRes(boolean running) {
-        if (running) {
-            return R.string.status_enabled;
+    private void addRow(int labelRes, boolean passing, View.OnClickListener fix) {
+        TextView label = new TextView(this);
+        label.setText(getString(passing ? R.string.preflight_row_pass
+                : R.string.preflight_row_fail, getString(labelRes)));
+        label.setTextSize(15f);
+        label.setPadding(0, dp(8), 0, 0);
+        checklistView.addView(label);
+
+        if (passing || fix == null) {
+            return;
+        }
+        Button button = new Button(this);
+        button.setText(R.string.preflight_fix);
+        button.setOnClickListener(fix);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.gravity = Gravity.START;
+        button.setLayoutParams(params);
+        checklistView.addView(button);
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * Four states, because "enabled", "running" and "working" are three
+     * different facts, and every gap between them is a way this app can look
+     * fine while doing nothing.
+     */
+    private int statusTextRes(boolean bound) {
+        if (bound) {
+            if (SkipAdAccessibilityService.isBlind()) {
+                return R.string.status_blind;
+            }
+            return Preflight.isConfigured(this)
+                    ? R.string.status_enabled
+                    : R.string.status_not_configured;
         }
         return isListedInSecureSetting()
                 ? R.string.status_not_running
@@ -110,8 +183,6 @@ public class MainActivity extends Activity {
         }
 
         ComponentName self = new ComponentName(this, SkipAdAccessibilityService.class);
-        // Compared component-wise rather than against getId(), whose exact
-        // string form is not part of the platform's contract.
         for (AccessibilityServiceInfo info : enabled) {
             ResolveInfo resolved = info.getResolveInfo();
             if (resolved == null || resolved.serviceInfo == null) {
@@ -142,9 +213,8 @@ public class MainActivity extends Activity {
             if (parsed == null) {
                 continue;
             }
-            // Entries are usually written in full form, but the short form
-            // ("pkg/.Class") is also valid and unflattenFromString leaves the
-            // leading dot in place rather than expanding it.
+            // The short form ("pkg/.Class") is also valid and
+            // unflattenFromString leaves the leading dot in place.
             String className = parsed.getClassName();
             if (className.startsWith(".")) {
                 className = parsed.getPackageName() + className;
@@ -157,75 +227,66 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    /**
-     * Not every ROM resolves {@link Settings#ACTION_ACCESSIBILITY_SETTINGS} --
-     * some vendor skins bury it, and restricted profiles hide it entirely. An
-     * unhandled ActivityNotFoundException would crash the app on tap, so fall
-     * back to telling the user where to go instead.
-     */
     private void openAccessibilitySettings() {
-        try {
-            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
-        } catch (ActivityNotFoundException e) {
-            Toast.makeText(this, R.string.settings_unavailable, Toast.LENGTH_LONG).show();
+        // Belt and braces: the button is disabled when preflight fails, but a
+        // gate that is only enforced in the view is not a gate.
+        if (!Preflight.isConfigured(this)) {
+            Toast.makeText(this, R.string.preflight_gate_blocked, Toast.LENGTH_LONG).show();
+            return;
         }
+        start(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), R.string.settings_unavailable);
     }
 
     /**
-     * Opens this app's App info page.
-     *
-     * <p>This is the one battery-related destination AOSP guarantees, and every
-     * vendor skin hangs its own per-app power controls off it: Samsung's
-     * "Battery", Xiaomi's "Battery saver", ColorOS's "Battery usage". Launching
-     * the vendors' own activities directly is not viable, because the component
-     * names move between OS versions and several builds do not export them,
-     * which raises SecurityException rather than the ActivityNotFoundException
-     * a caller would think to catch.
+     * Opens this app's App info page, where every vendor skin hangs its own
+     * per-app power controls.
      */
     private void openAppInfo() {
-        try {
-            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.fromParts("package", getPackageName(), null)));
-        } catch (ActivityNotFoundException e) {
-            Toast.makeText(this, R.string.app_info_unavailable, Toast.LENGTH_LONG).show();
-        }
+        start(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", getPackageName(), null)),
+                R.string.app_info_unavailable);
     }
 
     /**
-     * Picks the keep-alive instructions for this device.
+     * Asks the platform for the battery-optimisation exemption directly.
      *
-     * <p>Text rather than deep links, for the reason given in {@link
-     * #openAppInfo()}. Instructions degrade gracefully when a vendor renames a
-     * menu; a hardcoded intent to a renamed activity just fails.
+     * <p>{@code ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS} sets exactly the
+     * value {@link Preflight#isBatteryUnrestricted} reads, so the fix and the
+     * check are the same thing. The plain
+     * {@code ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS} list was worse on two
+     * counts: it drops the user into an unfiltered list to find the app
+     * themselves, and on skins that keep their own separate battery screen it
+     * is not the control they are shown elsewhere — so the check could stay
+     * red after they had apparently just fixed it.
      */
-    private int vendorTipsRes() {
-        String id = lower(Build.MANUFACTURER) + " " + lower(Build.BRAND);
-        if (id.contains("xiaomi") || id.contains("redmi") || id.contains("poco")) {
-            return R.string.vendor_tips_xiaomi;
-        }
-        if (id.contains("samsung")) {
-            return R.string.vendor_tips_samsung;
-        }
-        if (id.contains("oneplus") || id.contains("oppo") || id.contains("realme")) {
-            return R.string.vendor_tips_oppo;
-        }
-        if (id.contains("huawei") || id.contains("honor")) {
-            return R.string.vendor_tips_huawei;
-        }
-        if (id.contains("vivo") || id.contains("iqoo")) {
-            return R.string.vendor_tips_vivo;
-        }
-        return R.string.vendor_tips_generic;
+    private void openBatterySettings() {
+        start(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.fromParts("package", getPackageName(), null)),
+                R.string.battery_settings_unavailable);
     }
 
-    private static String lower(String value) {
-        return value == null ? "" : value.toLowerCase(Locale.US);
+    private void openNotificationSettings() {
+        start(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()),
+                R.string.notification_settings_unavailable);
+    }
+
+    /**
+     * Not every ROM resolves every settings action — some vendor skins bury
+     * them, and restricted profiles hide them entirely. An unhandled
+     * ActivityNotFoundException would crash the app on tap.
+     */
+    private void start(Intent intent, int unavailableMessage) {
+        try {
+            startActivity(intent);
+        } catch (ActivityNotFoundException | SecurityException e) {
+            Toast.makeText(this, unavailableMessage, Toast.LENGTH_LONG).show();
+        }
     }
 
     /**
      * The keep-alive notification has to be visible to be worth anything, and
-     * on Android 13+ that needs a runtime grant. Declining it costs only the
-     * resilience; skipping itself is unaffected.
+     * on Android 13+ that needs a runtime grant.
      */
     private void maybeRequestNotificationPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
@@ -240,5 +301,14 @@ public class MainActivity extends Activity {
         requestPermissions(
                 new String[]{Manifest.permission.POST_NOTIFICATIONS},
                 REQUEST_POST_NOTIFICATIONS);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_POST_NOTIFICATIONS) {
+            refresh();
+        }
     }
 }

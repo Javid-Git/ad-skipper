@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-    Scrolls because the per-vendor keep-alive instructions run to several lines
-    and would otherwise be cut off on a short screen.
+    Scrolls because the checklist and the background-execution guidance run to
+    several lines and would otherwise be cut off on a short screen.
 -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
@@ -10,7 +10,6 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center_horizontal"
         android:orientation="vertical"
         android:padding="24dp">
 
@@ -33,31 +32,78 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:paddingTop="32dp"
+            android:text="@string/preflight_heading"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <!-- Rows are added at runtime; see MainActivity.buildChecklist. -->
+        <LinearLayout
+            android:id="@+id/checklist"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingTop="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:paddingTop="24dp"
-            android:text="@string/setup_instructions"
+            android:text="@string/preflight_attest_heading"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/background_tips"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:text="@string/background_tips"
+            android:textSize="14sp" />
+
+
+        <CheckBox
+            android:id="@+id/attest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/preflight_attest" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:text="@string/preflight_attest_note"
+            android:textSize="12sp"
+            android:textStyle="italic" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="24dp"
+            android:background="?android:attr/dividerHorizontal" />
+
+        <TextView
+            android:id="@+id/gate_explanation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="16dp"
+            android:text="@string/preflight_gate_blocked"
             android:textSize="14sp" />
 
         <Button
             android:id="@+id/open_settings"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="12dp"
             android:text="@string/open_accessibility_settings" />
-
-        <!-- Populated at runtime from Build.MANUFACTURER; see MainActivity. -->
-        <TextView
-            android:id="@+id/vendor_tips"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:paddingTop="32dp"
-            android:text="@string/vendor_tips_generic"
-            android:textSize="14sp" />
 
         <Button
             android:id="@+id/open_app_info"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="8dp"
             android:layout_marginBottom="24dp"
             android:text="@string/open_app_info" />
 

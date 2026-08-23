@@ -10,9 +10,10 @@ so you can re-check it yourself.
 > It watches one app, reads what is on screen while that app is in the
 > foreground (including YouTube picture-in-picture), and performs exactly one
 > click on the Skip Ad button.
-> Its three permissions exist only to show an ongoing notification and grant no
-> access to data. It does not have `INTERNET`, so the Android kernel will not
-> let it open a network connection, and nothing it sees can leave the phone.
+> Its four permissions exist only to show an ongoing notification and the
+> platform's own battery dialog, and grant no access to data. It does not have
+> `INTERNET`, so the Android kernel will not let it open a network connection,
+> and nothing it sees can leave the phone.
 
 ## What it can access
 
@@ -34,12 +35,12 @@ would otherwise be invisible to the service.
 | Boundary | Status |
 | --- | --- |
 | Network | **Verified impossible.** The app does not declare `INTERNET`, so it never gets GID `3003` (`AID_INET`). Android enforces `INTERNET` at the kernel level via that group, so socket creation fails regardless of what the code asks for. |
-| Any permission that reads data | **None.** The three it declares — `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS` — exist solely to show the keep-alive notification. None maps to a supplementary GID, and none is a runtime data permission. |
+| Any permission that reads data | **None.** The four it declares — `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` — exist to show the keep-alive notification and the platform's own battery-exemption dialog. None maps to a supplementary GID, and none is a runtime data permission. |
 | Screenshots | Requires `canTakeScreenshot` / `ACTION_TAKE_SCREENSHOT`. Not declared, not used. |
 | Notifications | Requires the `typeNotificationStateChanged` event type. Not registered. |
 | Other apps' screens | Events are excluded by `packageNames`; polled windows are package-checked before their trees are traversed or clicked. |
 | Typing, swiping, scrolling, back/home | The code performs no gesture other than the one exact-bounds fallback tap on the matched skip control. |
-| Files, contacts, accounts, clipboard, camera, mic, location | All require permissions. It has none. |
+| Files, contacts, accounts, clipboard, camera, mic, location | All require permissions it does not declare. |
 | Backup / cloud sync of app data | `allowBackup="false"` in the manifest. |
 | Your screen contents in logs | Off by default. Node text is logged only after you explicitly opt in (see below). |
 
@@ -50,8 +51,9 @@ adb shell dumpsys package dev.javid.adskipper | grep -i requestedPermissions
 adb shell 'for p in $(pidof dev.javid.adskipper); do grep -i groups /proc/$p/status; done'
 ```
 
-The first prints exactly three entries — `FOREGROUND_SERVICE`,
-`FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS` — and no `INTERNET`. The
+The first prints exactly four entries — `FOREGROUND_SERVICE`,
+`FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS`,
+`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` — and no `INTERNET`. The
 second prints a group list with no `3003` in it, which is the check that
 actually matters: the kernel, not the manifest, is what makes the network
 unreachable.
@@ -60,7 +62,7 @@ unreachable.
 
 The *platform* would allow an accessibility service to do much more than this —
 read every app, log keystrokes, press buttons anywhere. What limits this one is
-its configuration (one package), its permission set (three, none of which reach
+its configuration (one package), its permission set (four, none of which reach
 data, and no `INTERNET`), and the roughly 1,000 lines of code — comments
 included — that you can read in one sitting. That is a meaningful boundary, but it is a
 boundary you are trusting **this build** to hold. Which is exactly why you
@@ -120,8 +122,9 @@ description to match.
 | The screen is off but audio is still playing | It still skips. This is deliberate — the hands-off case is the whole point. |
 | `ACTION_CLICK` is refused by the node | A single exact-bounds tap is attempted on the matched skip node; if that is unavailable, the failure is logged and retried on the next monitor scan. |
 | The device is out of memory | The process is killable. Android re-binds enabled accessibility services automatically, so it comes back. The keep-alive notification raises the process out of the "nothing user-visible here" bucket, but does not make it unkillable. |
-| A vendor memory cleaner sweeps the app (one-key clean, swipe-up clear) | Those are force stops. The binding dies, the stored setting does not, and a stopped package cannot be re-bound until you open the app. The app screen detects exactly this and says the service was stopped by the system rather than showing a false OFF. See [Keeping it running](README.md#keeping-it-running). |
+| A device memory cleaner sweeps the app (a "clear all apps" action) | Those are force stops. The binding dies, the stored setting does not, and a stopped package cannot be re-bound until you open the app. The app screen detects exactly this and says the service was stopped by the system rather than showing a false OFF. See [Keeping it running](README.md#keeping-it-running). |
 | Accessibility settings show the toggle ON but nothing is skipped | The setting and the binding have desynced — that is the state above. Toggle the service off and back on to rebind it. |
+| The service is bound with full capabilities but the platform serves it nothing | Happens after a force stop: the component lands in the platform's crashed set and on some vendor ROMs that flag survives the rebind. Nothing else on the device reveals it — it still appears under `Bound services` with `capabilities=33`. The service detects it by the window count (a healthy service always sees at least the status and navigation bars; a blind one sees zero), and changes both the notification and the app screen to say it has stopped working. Confirmed over three consecutive reports — about 20s, since the first fires on connect — and only while the screen is on, so a transient blip cannot raise a false alarm. Toggle off and on to clear it. |
 | You deny the notification permission | The service still runs, but on Android 13+ its notification is not displayed. Skipping is unaffected; most of the protection against cleaners is lost, since what they skip over is the *visible* ongoing notification. The app asks once per launch and never nags. |
 | The platform refuses to promote the keep-alive service | Logged at warn level and the service stops itself rather than lingering as an invisible background service. Skipping is unaffected. |
 | Accessibility settings won't open on a vendor ROM | The button shows a toast with the manual path instead of crashing. |
@@ -167,7 +170,7 @@ move the process into a better kill band: an accessibility service is bound by
 `system_server` and was already sitting at `vis`/100 before the change. So the
 keep-alive buys nothing against low-memory reclaim that was not already there.
 Its entire value is the *visible ongoing notification* that vendor cleaner
-heuristics skip over. If you are weighing whether the three permissions are
+heuristics skip over. If you are weighing whether the permissions are
 worth it, weigh them against that and nothing else.
 
 Reproduce the band with:

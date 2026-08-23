@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#FF0F0F0F</color>
+    <!--
+        Launcher icon gradient. Referenced from
+        drawable/ic_launcher_background.xml.
+    -->
+    <color name="ic_launcher_gradient_start">#FF2F6BF3</color>
+    <color name="ic_launcher_gradient_end">#FF8A2BE2</color>
 </resources>

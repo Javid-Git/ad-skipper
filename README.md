@@ -93,16 +93,16 @@ What this build actually does is scoped as tightly as the platform allows: it
 reads only windows whose package is YouTube, and re-checks that package before
 every scan and click.
 
-It declares exactly three permissions, all of them for the keep-alive
-notification described under [Keeping it running](#keeping-it-running):
+It declares exactly four permissions, none of which reaches any data:
 
 | Permission | Why | Grants access to |
 | --- | --- | --- |
 | `FOREGROUND_SERVICE` | run the keep-alive service | nothing |
 | `FOREGROUND_SERVICE_SPECIAL_USE` | required for its service type on API 34+ | nothing |
 | `POST_NOTIFICATIONS` | show the ongoing notification | nothing |
+| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | show the platform's own battery-exemption dialog | nothing |
 
-None of the three maps to a supplementary GID or to a runtime data permission.
+None of the four maps to a supplementary GID or to a runtime data permission.
 **`INTERNET` is deliberately absent**, which is the one that matters: without it
 the app never receives GID `3003`, and the kernel refuses to let it open a
 network socket. Nothing it reads can leave the device, and that is enforced
@@ -125,22 +125,45 @@ believe it.
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Then turn the service on. Android does not allow an app to enable its own
-accessibility service — this step is deliberately manual:
+Then open the app. It runs a set of setup checks and **will not hand over the
+route to Accessibility settings until they pass**:
+
+| Check | How it is verified |
+| --- | --- |
+| The YouTube app is installed | `getPackageInfo`, via a `<queries>` entry |
+| Notifications are allowed | `areNotificationsEnabled()` and channel importance |
+| Battery restrictions are removed | `isIgnoringBatteryOptimizations()` |
+| The device lets it run in the background | **not verifiable — you confirm it** |
+
+That last one has no API. Auto-start permissions are vendor app-ops with no
+public name, and whether an app is pinned in Recents is not exposed at all. The
+app says so on screen rather than showing a tick it cannot stand behind.
+
+The gate exists because enabling the service before the device is set up to keep
+it running produces an app that works for ten minutes and then stops silently —
+which is worse than one that never started, because you stop checking.
+
+It gates this screen only. Enabling the service directly from system Settings
+still works, and is detected: the notification then reads **NOT CONFIGURED**.
+
+Android does not allow an app to enable its own accessibility service, so the
+final step is always manual:
 
 **Settings → Accessibility → Installed apps → Ad Skipper → On**
 
-Launching the app shows whether the service is currently running and has a
-button that takes you straight to that settings page.
-
-The app screen reports one of three states, because *enabled* and *running* are
-different facts:
+Afterwards the app screen reports one of five states, because *enabled*,
+*running* and *working* are three different facts:
 
 | Screen says | Means |
 | --- | --- |
-| **ON** | the platform holds a live binding to the service |
+| **ON** | bound, serving window content, all checks passed |
+| **Setup incomplete** | working, but the checks have not been completed |
+| **Cannot read the screen** | bound, but the platform serves it nothing — see below |
 | **Stopped by the system** | your consent is still stored, but nothing is bound — see below |
 | **OFF** | not enabled |
+
+The notification carries the same distinction in three words: **active**,
+**NOT CONFIGURED**, or **INACTIVE**.
 
 That middle state is the confusing one, and it is why the check exists.
 `ENABLED_ACCESSIBILITY_SERVICES` is a persisted setting recording your consent;
@@ -149,6 +172,19 @@ show the toggle as ON** while nothing is actually running. The app compares that
 setting against `getEnabledAccessibilityServiceList()`, which reflects live
 bindings, and says so plainly when the two disagree. Toggle the service off and
 back on to rebind it.
+
+The third state is worse, because nothing else on the device reveals it. After a
+force stop the platform puts the component in its crashed set, and on some
+vendor ROMs that flag survives the rebind. The service then sits under `Bound
+services` with full capabilities while every window query comes back empty — it
+is connected, and blind. The service detects this by counting windows: a healthy
+one always sees at least the status and navigation bars whatever app is in
+front, and a blind one sees exactly zero. When that holds for three consecutive
+reports with the screen on — about 20 seconds — the notification stops claiming
+the app is active and says it has stopped working instead.
+
+That last part is the point. A monitoring tool that quietly stops monitoring is
+worse than no tool, because you go on trusting it.
 
 The accessibility service scans every 300ms while any YouTube window is
 visible, not only while an ad is playing. That is a small CPU cost, but a
@@ -174,24 +210,18 @@ Two things help.
 **The keep-alive notification.** While the service is enabled the app holds a
 silent, ongoing notification. Cleaner heuristics generally skip a process that
 has something user-visible attached, so this reduces how often it gets swept up.
-It costs the three permissions listed above and none of them can move data off
+It costs the permissions listed above and none of them can move data off
 the device. It does **not** survive a deliberate Force stop, and nothing an
 ordinary app can do would.
 
-**Per-vendor settings.** These are not standardised — there is no AOSP API for
-"lock this app," and vendor settings activities get renamed between OS versions,
-so the app shows instructions for your device rather than pretending it can deep
-link into them. The **Open App info** button goes to the one page AOSP does
-guarantee, which is where every skin hangs its own battery controls.
-
-| Device | What to do |
-| --- | --- |
-| **Xiaomi / Redmi / POCO** | Recents → pull down on the card → **padlock** (this is the important one; it exempts the app from one-key clean and swipe-up clear). Then Security → Permissions → **Autostart** on, and App info → Battery saver → **No restrictions**. |
-| **Samsung** | Settings → Battery → Background usage limits → **Never sleeping apps** → add it. App info → Battery → **Unrestricted**. |
-| **OnePlus / OPPO / realme** | App info → Battery usage → **Allow background activity**, optimisation **Don't optimise**. Lock the card in Recents. |
-| **Huawei / Honor** | Settings → Battery → **App launch** → Ad Skipper → **Manage manually**, all three switches on. |
-| **vivo / iQOO** | Settings → Battery → **High background power consumption** → allow. Settings → Apps → **Autostart** → on. |
-| **Stock / Pixel / Motorola / Nothing** | Usually nothing. The platform re-binds on its own. |
+**Letting it run in the background.** This is not standardised — there is no
+AOSP API to read whether an app may auto-start, and none at all for the Recents
+lock. The app deliberately contains no per-manufacturer code: vendor settings
+activities get renamed between OS versions and are often unexported, so
+hardcoding them fails silently on exactly the devices that need them. Instead it
+uses the two destinations AOSP guarantees — the platform's own battery-exemption
+dialog, and the **App info** page every skin hangs its own power controls off —
+and asks you to confirm the step it cannot verify.
 
 [dontkillmyapp.com](https://dontkillmyapp.com) tracks these per brand and per OS
 version, and is a better reference than anything pinned here.
@@ -266,11 +296,10 @@ and neither needs its own entry.
   usually carries it, but a non-English device may need labels added.
 - **Not a network-level ad blocker.** The ad still loads and plays for its first
   few seconds; this only presses the button you could have pressed yourself.
-- **A force stop always wins.** Clearing Recents on ROMs that implement it as a
-  force stop — Xiaomi's one-key clean and swipe-up clear among them — stops the
-  service until you open the app again. The keep-alive notification does not
-  change that, and nothing an ordinary app can do would. See
-  [Keeping it running](#keeping-it-running).
+- **A force stop always wins.** Some devices implement "clear all apps" as a
+  force stop, which stops the service until you open the app again. The
+  keep-alive notification does not change that, and nothing an ordinary app can
+  do would. See [Keeping it running](#keeping-it-running).
 
 ## Possible next steps
 
@@ -290,10 +319,12 @@ app/src/main/
 ├── java/dev/javid/adskipper/
 │   ├── SkipAdAccessibilityService.java       # detection + click logic
 │   ├── KeepAliveService.java                 # ongoing notification, nothing else
-│   └── MainActivity.java                     # status screen, opens settings
+│   ├── Preflight.java                        # setup checks, and what cannot be checked
+│   └── MainActivity.java                     # status screen + setup gate
 └── res/
     ├── xml/accessibility_service_config.xml  # scopes the service to YouTube
     ├── drawable/ic_notification.xml          # status-bar glyph
+    ├── drawable/ic_launcher_background.xml   # adaptive-icon gradient
     ├── layout/activity_main.xml
     └── values/strings.xml
 ```

@@ -7,6 +7,7 @@ import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.text.TextUtils;
 import android.util.Log;
@@ -57,7 +58,7 @@ public class SkipAdAccessibilityService extends AccessibilityService {
      * being queued and us reading the tree. This is what guarantees the service
      * never clicks anything in another app.
      */
-    private static final String TARGET_PACKAGE = "com.google.android.youtube";
+    static final String TARGET_PACKAGE = "com.google.android.youtube";
 
     /**
      * An optional fast path when present: YouTube's own view IDs. Checked
@@ -156,10 +157,98 @@ public class SkipAdAccessibilityService extends AccessibilityService {
     private int windowUnreadable;
     private long lastCounterReportAt;
 
+    /**
+     * Last sample of how many windows {@link #getWindows()} returned, and how
+     * many of those would hand over a root node. {@code -1} means not sampled
+     * yet; only the slow path samples them, because the fast path never calls
+     * {@code getWindows()}.
+     *
+     * <p>These exist to separate two states that are otherwise identical from
+     * in here, both showing zero events and a climbing {@link #windowUnreadable}:
+     *
+     * <ul>
+     *   <li><b>Blind.</b> The platform has put this service in its crashed set
+     *       — which survives a rebind on some vendor ROMs — and refuses it
+     *       window content even though it still appears bound with full
+     *       capabilities.</li>
+     *   <li><b>Idle.</b> YouTube simply is not in the foreground, so a service
+     *       scoped to YouTube by {@code packageNames} correctly sees nothing.
+     *       Working exactly as intended.</li>
+     * </ul>
+     *
+     * <p>Counts only. Never window titles, which are screen content.
+     */
+    private int lastWindowCount = -1;
+    private int lastWindowsWithRoot = -1;
+
+    /**
+     * How many consecutive counter reports found the platform serving no
+     * windows at all.
+     *
+     * <p>Three reports is 30 seconds. Deliberately slow to raise, because a
+     * false "it stopped working" warning is worse than none — it teaches people
+     * to ignore the real one.
+     */
+    private static final int BLIND_REPORTS_TO_CONFIRM = 3;
+
+    private int blindReports;
+
+    /**
+     * Whether the platform is currently refusing this service any window
+     * content, leaving it connected but unable to see the screen.
+     *
+     * <p>{@code static} so {@link MainActivity} can read it: both now live in
+     * the same process. It resets to {@code false} with the process, which is
+     * correct — a service that is not running is not blind, it is gone, and
+     * MainActivity reports that case separately.
+     */
+    private static volatile boolean blind;
+
+    /** @return whether the service is connected but being served no windows */
+    static boolean isBlind() {
+        return blind;
+    }
+
+    /**
+     * The single source of truth for what the notification says.
+     *
+     * <p>Order matters. Blind wins over unconfigured, because a service that
+     * cannot see the screen is broken now, whereas an unconfigured one is
+     * working but fragile. Both outrank claiming to be active.
+     */
+    static KeepAliveService.Status currentStatus(android.content.Context context) {
+        if (blind) {
+            return KeepAliveService.Status.INACTIVE;
+        }
+        if (!Preflight.isConfigured(context)) {
+            return KeepAliveService.Status.NOT_CONFIGURED;
+        }
+        return KeepAliveService.Status.ACTIVE;
+    }
+
+    /** Last status pushed to the notification, so it is only rewritten on change. */
+    private KeepAliveService.Status lastStatus;
+
+    /**
+     * Preflight involves a handful of binder calls, so it is not re-run on
+     * every 10s report. A minute is far quicker than anyone can change a
+     * setting and come back to look at the notification.
+     */
+    private static final int REPORTS_PER_PREFLIGHT = 6;
+
+    private int reportsSincePreflight = REPORTS_PER_PREFLIGHT;
+
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
         Log.i(TAG, "Service connected; watching " + TARGET_PACKAGE);
+        // A fresh connection starts assumed-healthy. Set directly rather than
+        // through setBlind, which would try to update a notification that the
+        // next line has not created yet.
+        blind = false;
+        blindReports = 0;
+        lastStatus = null;
+        reportsSincePreflight = REPORTS_PER_PREFLIGHT;
         // Tie the keep-alive notification to this service's lifetime, so it
         // exists exactly while there is something for it to protect. The start
         // can be refused under Android 12's background-start rules; MainActivity
@@ -185,6 +274,8 @@ public class SkipAdAccessibilityService extends AccessibilityService {
     private void shutDown() {
         handler.removeCallbacks(pollRunnable);
         pollScheduled = false;
+        blind = false;
+        blindReports = 0;
         KeepAliveService.stop(this);
     }
 
@@ -250,12 +341,17 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         // In PiP the launcher or another app may own the active window even
         // though YouTube's small window is still visible and interactive.
         List<AccessibilityWindowInfo> windows = getWindows();
+        lastWindowCount = windows == null ? 0 : windows.size();
+        lastWindowsWithRoot = 0;
         if (windows != null) {
             for (AccessibilityWindowInfo window : windows) {
                 if (window == null) {
                     continue;
                 }
                 AccessibilityNodeInfo windowRoot = window.getRoot();
+                if (windowRoot != null) {
+                    lastWindowsWithRoot++;
+                }
                 if (isTargetRoot(windowRoot)) {
                     reportCounters(SystemClock.uptimeMillis(), windowRoot);
                     scanRoot(windowRoot);
@@ -331,8 +427,86 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         }
         lastCounterReportAt = now;
         Log.i(TAG, "Events seen " + eventsSeen + ", unreadable window "
-                + windowUnreadable + ", last root package "
+                + windowUnreadable + ", windows " + lastWindowCount
+                + " (" + lastWindowsWithRoot + " readable), last root package "
                 + (root == null ? "null" : asString(root.getPackageName())));
+        updateBlindState(root);
+    }
+
+    /**
+     * Detects the state where this service is connected and looks healthy from
+     * outside, but the platform serves it nothing.
+     *
+     * <p>It happens after the process is force-stopped: the platform puts the
+     * component in its crashed set, and on some vendor ROMs that flag survives
+     * the rebind. The service then appears in {@code Bound services} with full
+     * capabilities while every window query comes back empty. Nothing visible
+     * to the user says anything is wrong, which is exactly why this exists.
+     *
+     * <p>The signal is positive rather than an absence of evidence. A healthy
+     * service always sees <em>something</em> — at minimum the status and
+     * navigation bars — whatever app is in front. Measured on a device:
+     * healthy-but-idle reports 3 windows, all readable; blind reports 0. That
+     * distinction is what separates "broken" from "you just have not opened
+     * YouTube", which the event counter alone cannot do.
+     */
+    private void updateBlindState(AccessibilityNodeInfo root) {
+        boolean sawSomething = root != null || lastWindowCount > 0;
+
+        // With the screen off there may genuinely be no windows, which would
+        // otherwise be indistinguishable from being blind.
+        PowerManager power = getSystemService(PowerManager.class);
+        boolean screenOn = power == null || power.isInteractive();
+
+        if (sawSomething || !screenOn) {
+            blindReports = 0;
+            setBlind(false);
+            return;
+        }
+
+        // Asymmetric on purpose: three reports to raise the alarm, a single
+        // good one to clear it. Slow to worry, quick to forgive.
+        blindReports++;
+        if (blindReports >= BLIND_REPORTS_TO_CONFIRM) {
+            setBlind(true);
+        }
+    }
+
+    private void setBlind(boolean nowBlind) {
+        if (blind != nowBlind) {
+            blind = nowBlind;
+            if (nowBlind) {
+                Log.w(TAG, "Connected but the platform is serving no windows at all."
+                        + " Ad skipping cannot work in this state.");
+            } else {
+                Log.i(TAG, "Window content is being served again.");
+            }
+            // A blindness change must reach the notification immediately, not
+            // wait out the preflight interval.
+            reportsSincePreflight = REPORTS_PER_PREFLIGHT;
+        }
+        pushStatus();
+    }
+
+    /**
+     * Recomputes the notification status and pushes it only when it changes.
+     *
+     * <p>Preflight is re-evaluated at most once a minute; blindness is already
+     * current every time this is called.
+     */
+    private void pushStatus() {
+        if (++reportsSincePreflight < REPORTS_PER_PREFLIGHT && lastStatus != null) {
+            return;
+        }
+        reportsSincePreflight = 0;
+
+        KeepAliveService.Status status = currentStatus(this);
+        if (status == lastStatus) {
+            return;
+        }
+        lastStatus = status;
+        Log.i(TAG, "Notification status is now " + status);
+        KeepAliveService.setStatus(this, status);
     }
 
     private void recordSuccessfulClick(AccessibilityNodeInfo node, String method) {
@@ -553,7 +727,7 @@ public class SkipAdAccessibilityService extends AccessibilityService {
      * <p>Gated behind content logging, and throttled, because it is verbose and
      * puts on-screen text into logcat. This exists because
      * {@code adb shell uiautomator dump} refuses to run on some vendor builds
-     * (it fails outright on MIUI), which otherwise leaves no way to inspect the
+     * (it fails outright on some vendor builds), which otherwise leaves no way to inspect the
      * tree on the device where skipping is actually broken.
      */
     private void logTreeSnapshot(AccessibilityNodeInfo root, long now) {
