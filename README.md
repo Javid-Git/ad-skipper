@@ -20,9 +20,12 @@ device and use it there.
    some real-device ad overlays expose none.
 4. Because the label itself usually isn't the clickable element, it walks up the
    node tree to the nearest clickable ancestor.
-5. It calls `ACTION_CLICK` on that node. If YouTube exposes the control but
-   refuses the node action, it falls back to one tap at that matched node's
-   exact screen bounds.
+5. It calls `ACTION_CLICK` on that node, then on the matched node itself if the
+   ancestor refuses. If YouTube exposes the control but refuses both, it falls
+   back to one tap at that matched node's exact screen bounds.
+6. While the service is enabled it holds a silent, ongoing notification, which
+   makes the process a less attractive target for the memory cleaners some
+   vendor ROMs ship. See [Keeping it running](#keeping-it-running).
 
 The monitor does not depend on one perfectly timed content-change event. It scans
 the current YouTube window and interactive PiP windows until the control appears.
@@ -59,7 +62,7 @@ gradlew.bat assembleDebug     # Windows
 ```
 
 The APK lands at `app/build/outputs/apk/debug/app-debug.apk`, and the current
-debug build comes out around 59 KB. Android Studio uses the wrapper by default,
+debug build comes out around 56 KB. Android Studio uses the wrapper by default,
 so opening the project directory there works too.
 
 If you'd rather use Android Studio, just open the project directory — it's a
@@ -81,16 +84,35 @@ be this project, don't run it.
 The same reasoning cuts the other way, too: **this code is a short edit away from
 being spyware.** Widen `packageNames` to cover every app, add
 `<uses-permission android:name="android.permission.INTERNET"/>`, and the same
-roughly 500 lines become a screen scraper that phones home. Nothing here is novel — it
+roughly 1,000 lines become a screen scraper that phones home. Nothing here is novel — it
 is a documented Android API — but if you are reading a *fork* of this project,
 diff it against upstream before you build it, and check the manifest for added
 permissions.
 
 What this build actually does is scoped as tightly as the platform allows: it
-reads only windows whose package is YouTube, re-checks that package before every
-scan and click, and declares **zero permissions** — which means it never receives
-GID `3003`, and the kernel refuses to let it open a network socket. Nothing it
-reads can leave the device.
+reads only windows whose package is YouTube, and re-checks that package before
+every scan and click.
+
+It declares exactly three permissions, all of them for the keep-alive
+notification described under [Keeping it running](#keeping-it-running):
+
+| Permission | Why | Grants access to |
+| --- | --- | --- |
+| `FOREGROUND_SERVICE` | run the keep-alive service | nothing |
+| `FOREGROUND_SERVICE_SPECIAL_USE` | required for its service type on API 34+ | nothing |
+| `POST_NOTIFICATIONS` | show the ongoing notification | nothing |
+
+None of the three maps to a supplementary GID or to a runtime data permission.
+**`INTERNET` is deliberately absent**, which is the one that matters: without it
+the app never receives GID `3003`, and the kernel refuses to let it open a
+network socket. Nothing it reads can leave the device, and that is enforced
+below the app rather than promised by it.
+
+That pairing is also why `INTERNET` stays out permanently. Accessibility plus
+network is the exact shape of the Android banking-trojan family — read the
+screen, ship it off-device — and it is the combination scanners weight most
+heavily. Keeping the socket impossible is worth more than any feature it
+would buy.
 
 [SECURITY.md](SECURITY.md) documents the full access boundary, the
 monitor-to-click flow, every failure mode, and the measured RAM, CPU, and battery
@@ -111,22 +133,76 @@ accessibility service — this step is deliberately manual:
 Launching the app shows whether the service is currently running and has a
 button that takes you straight to that settings page.
 
-The status check validates the master Accessibility switch, Ad Skipper's entry
-in the enabled-service list, and the dedicated `:accessibility` process. If a
-vendor ROM leaves the enabled list stale after stopping the service, the app
-reports that the service is not running instead of showing a false ON state.
+The app screen reports one of three states, because *enabled* and *running* are
+different facts:
 
-The accessibility service runs in a separate process from this screen, so
-closing the app or swiping it away from Recents does not turn the service off.
-Android still stops every component when you explicitly use **Force stop** in
-the app's system settings; reopen the app and enable the service again after
-that.
+| Screen says | Means |
+| --- | --- |
+| **ON** | the platform holds a live binding to the service |
+| **Stopped by the system** | your consent is still stored, but nothing is bound — see below |
+| **OFF** | not enabled |
+
+That middle state is the confusing one, and it is why the check exists.
+`ENABLED_ACCESSIBILITY_SERVICES` is a persisted setting recording your consent;
+it survives the process being killed, so **Accessibility settings will still
+show the toggle as ON** while nothing is actually running. The app compares that
+setting against `getEnabledAccessibilityServiceList()`, which reflects live
+bindings, and says so plainly when the two disagree. Toggle the service off and
+back on to rebind it.
 
 The accessibility service scans every 300ms while any YouTube window is
-visible, not only while an ad is playing. On the reference device this measured
-1.56 CPU seconds over roughly 188 wall-clock seconds (~0.83% of one core), with
-15.3 MB PSS, 105 MB RSS, and a 9.1 MB Java heap. That is a small CPU cost, but it
-is a deliberate battery tradeoff while browsing YouTube.
+visible, not only while an ad is playing. That is a small CPU cost, but a
+deliberate battery tradeoff while browsing YouTube. See
+[SECURITY.md](SECURITY.md#resource-cost) for the measured figures.
+
+## Keeping it running
+
+If skipping works and then quietly stops, the service was almost certainly
+killed. This is worth understanding before you go looking for a bug in the
+matching logic.
+
+An accessibility service is bound by `system_server`, not started by the app.
+When its process dies, that binding dies with it, but the stored setting does
+not — so the toggle still reads ON. On stock Android the platform re-binds
+within seconds and you never notice. What breaks that is a **force stop**: it
+marks the package stopped, and a stopped package cannot be started by anything
+except you opening it. Several vendor skins implement their memory cleaners as
+force stops, which is why this shows up on those devices and rarely on a Pixel.
+
+Two things help.
+
+**The keep-alive notification.** While the service is enabled the app holds a
+silent, ongoing notification. Cleaner heuristics generally skip a process that
+has something user-visible attached, so this reduces how often it gets swept up.
+It costs the three permissions listed above and none of them can move data off
+the device. It does **not** survive a deliberate Force stop, and nothing an
+ordinary app can do would.
+
+**Per-vendor settings.** These are not standardised — there is no AOSP API for
+"lock this app," and vendor settings activities get renamed between OS versions,
+so the app shows instructions for your device rather than pretending it can deep
+link into them. The **Open App info** button goes to the one page AOSP does
+guarantee, which is where every skin hangs its own battery controls.
+
+| Device | What to do |
+| --- | --- |
+| **Xiaomi / Redmi / POCO** | Recents → pull down on the card → **padlock** (this is the important one; it exempts the app from one-key clean and swipe-up clear). Then Security → Permissions → **Autostart** on, and App info → Battery saver → **No restrictions**. |
+| **Samsung** | Settings → Battery → Background usage limits → **Never sleeping apps** → add it. App info → Battery → **Unrestricted**. |
+| **OnePlus / OPPO / realme** | App info → Battery usage → **Allow background activity**, optimisation **Don't optimise**. Lock the card in Recents. |
+| **Huawei / Honor** | Settings → Battery → **App launch** → Ad Skipper → **Manage manually**, all three switches on. |
+| **vivo / iQOO** | Settings → Battery → **High background power consumption** → allow. Settings → Apps → **Autostart** → on. |
+| **Stock / Pixel / Motorola / Nothing** | Usually nothing. The platform re-binds on its own. |
+
+[dontkillmyapp.com](https://dontkillmyapp.com) tracks these per brand and per OS
+version, and is a better reference than anything pinned here.
+
+What deliberately is **not** implemented: watching for YouTube launching and
+starting the service on demand. An app cannot start its own accessibility
+service — that needs `WRITE_SECURE_SETTINGS`, which is `signature|privileged` —
+so the only achievable outcome would be a notification saying it died, at the
+cost of `PACKAGE_USAGE_STATS` (your full app-usage history) and a permanent
+polling loop. The poll is also the exact behaviour vendor battery heuristics
+look for, so it would make the kills more likely, not less.
 
 ## Verify it works
 
@@ -190,6 +266,11 @@ and neither needs its own entry.
   usually carries it, but a non-English device may need labels added.
 - **Not a network-level ad blocker.** The ad still loads and plays for its first
   few seconds; this only presses the button you could have pressed yourself.
+- **A force stop always wins.** Clearing Recents on ROMs that implement it as a
+  force stop — Xiaomi's one-key clean and swipe-up clear among them — stops the
+  service until you open the app again. The keep-alive notification does not
+  change that, and nothing an ordinary app can do would. See
+  [Keeping it running](#keeping-it-running).
 
 ## Possible next steps
 
@@ -208,9 +289,11 @@ app/src/main/
 ├── AndroidManifest.xml                       # service + activity declarations
 ├── java/dev/javid/adskipper/
 │   ├── SkipAdAccessibilityService.java       # detection + click logic
+│   ├── KeepAliveService.java                 # ongoing notification, nothing else
 │   └── MainActivity.java                     # status screen, opens settings
 └── res/
     ├── xml/accessibility_service_config.xml  # scopes the service to YouTube
+    ├── drawable/ic_notification.xml          # status-bar glyph
     ├── layout/activity_main.xml
     └── values/strings.xml
 ```

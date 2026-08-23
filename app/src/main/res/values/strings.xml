@@ -8,11 +8,38 @@
 
     <string name="status_enabled">Service is ON. Skippable YouTube ads will be skipped automatically.</string>
     <string name="status_disabled">Service is OFF. Turn it on to start skipping ads.</string>
-    <string name="status_not_running">Service is enabled, but its process is not running. Toggle Ad Skipper off and on in Accessibility settings.</string>
+    <!--
+        The setting/binding gap. Accessibility settings will still show the
+        switch as ON here, because the stored consent survives the process
+        being killed. Saying so up front stops the user going to Settings,
+        finding it already on, and concluding the app is lying.
+    -->
+    <string name="status_not_running">Service was stopped by the system. Accessibility settings will still show Ad Skipper as ON — turn it off and back on again to restart it.</string>
 
     <string name="setup_instructions">Android does not let an app switch on its own accessibility service, so this last step is manual:\n\nSettings &gt; Accessibility &gt; Installed apps &gt; Ad Skipper &gt; On</string>
 
     <string name="settings_unavailable">Could not open Accessibility settings on this device. Open Settings and look for Accessibility &gt; Installed apps &gt; Ad Skipper.</string>
 
     <string name="open_accessibility_settings">Open Accessibility settings</string>
+    <string name="open_app_info">Open App info (battery settings)</string>
+    <string name="app_info_unavailable">Could not open App info on this device. Open Settings &gt; Apps and find Ad Skipper.</string>
+
+    <!-- Keep-alive foreground service. -->
+    <string name="keep_alive_channel_name">Service running</string>
+    <string name="keep_alive_channel_description">A silent, ongoing notification shown while the skip service is active. It exists so device memory cleaners are less likely to stop Ad Skipper.</string>
+    <string name="keep_alive_title">Ad Skipper is active</string>
+    <string name="keep_alive_text">Watching YouTube for skippable ads.</string>
+
+    <!--
+        Per-vendor keep-alive instructions, selected by Build.MANUFACTURER.
+        Deliberately text, not deep links: vendor settings activities are
+        renamed between OS versions and are often not exported, so a hardcoded
+        intent fails where instructions merely need re-reading.
+    -->
+    <string name="vendor_tips_xiaomi">Keeping it running on Xiaomi/Redmi/POCO:\n\n1. Open Recents, pull down on the Ad Skipper card, and tap the padlock. Locked apps survive one-key clean and swipe-up clear — this is the important one.\n2. Security app &gt; Permissions &gt; Autostart &gt; enable Ad Skipper.\n3. App info &gt; Battery saver &gt; No restrictions.</string>
+    <string name="vendor_tips_samsung">Keeping it running on Samsung:\n\n1. Settings &gt; Battery &gt; Background usage limits &gt; Never sleeping apps &gt; add Ad Skipper.\n2. App info &gt; Battery &gt; Unrestricted.\n3. Make sure Ad Skipper is not listed under Deep sleeping apps.</string>
+    <string name="vendor_tips_oppo">Keeping it running on OnePlus/OPPO/realme:\n\n1. App info &gt; Battery usage &gt; Allow background activity, and set battery optimisation to Don\'t optimise.\n2. Recents &gt; long-press the Ad Skipper card &gt; Lock.\n3. Settings &gt; Battery &gt; turn off Sleep standby optimisation if present.</string>
+    <string name="vendor_tips_huawei">Keeping it running on Huawei/Honor:\n\n1. Settings &gt; Battery &gt; App launch &gt; Ad Skipper &gt; Manage manually, and enable all three switches.\n2. Recents &gt; swipe down on the Ad Skipper card to lock it.</string>
+    <string name="vendor_tips_vivo">Keeping it running on vivo/iQOO:\n\n1. Settings &gt; Battery &gt; High background power consumption &gt; allow Ad Skipper.\n2. Settings &gt; Apps &gt; Autostart &gt; enable Ad Skipper.\n3. Recents &gt; lock the Ad Skipper card.</string>
+    <string name="vendor_tips_generic">Keeping it running:\n\nIf ads stop being skipped, your device is stopping the service in the background. Open App info below and remove any battery restriction on Ad Skipper, then lock it in Recents if your device offers that.\n\nStock Android re-starts the service by itself, so this mostly affects vendor ROMs. dontkillmyapp.com lists the exact steps per brand.</string>
 </resources>

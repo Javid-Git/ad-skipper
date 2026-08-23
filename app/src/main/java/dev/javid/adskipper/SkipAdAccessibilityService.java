@@ -2,6 +2,7 @@ package dev.javid.adskipper;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
+import android.content.Intent;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.os.Handler;
@@ -38,8 +39,10 @@ import java.util.Locale;
  *   <li>It reads the on-screen node tree. It never types, scrolls, or swipes,
  *       and the only action it performs is a click on a node it identified as
  *       the skip control (using the node action or that node's exact bounds).</li>
- *   <li>The app declares <em>no permissions at all</em> — notably not
- *       {@code INTERNET} — so nothing it reads can leave the device.</li>
+ *   <li>The app declares no permission that grants access to data, and notably
+ *       not {@code INTERNET}, so nothing it reads can leave the device. The
+ *       three it does declare exist only so {@link KeepAliveService} can hold
+ *       an ongoing notification.</li>
  *   <li>Screen text is written to the log only when someone explicitly turns
  *       debug logging on; see {@link #contentLoggingEnabled()}.</li>
  * </ul>
@@ -157,7 +160,32 @@ public class SkipAdAccessibilityService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         Log.i(TAG, "Service connected; watching " + TARGET_PACKAGE);
+        // Tie the keep-alive notification to this service's lifetime, so it
+        // exists exactly while there is something for it to protect. The start
+        // can be refused under Android 12's background-start rules; MainActivity
+        // retries from a resumed activity, where it is always permitted.
+        KeepAliveService.start(this);
         schedulePoll(0L);
+    }
+
+    @Override
+    public boolean onUnbind(Intent intent) {
+        // Reached when the user turns the service off in Accessibility settings.
+        shutDown();
+        return super.onUnbind(intent);
+    }
+
+    @Override
+    public void onDestroy() {
+        shutDown();
+        super.onDestroy();
+    }
+
+    /** Idempotent: onUnbind and onDestroy both fire in the normal disable path. */
+    private void shutDown() {
+        handler.removeCallbacks(pollRunnable);
+        pollScheduled = false;
+        KeepAliveService.stop(this);
     }
 
     @Override
@@ -186,8 +214,19 @@ public class SkipAdAccessibilityService extends AccessibilityService {
                 youtubeVisible = scanCurrentWindows();
             } catch (RuntimeException e) {
                 Log.w(TAG, "Ignoring error while polling YouTube", e);
+            } finally {
+                // In a finally block, not after the catch, because the catch
+                // only covers RuntimeException. An Error escaping the scan —
+                // StackOverflowError on a pathological tree, OutOfMemoryError —
+                // would otherwise skip the reschedule and stop the loop for
+                // good, while the service stayed bound and the keep-alive
+                // notification kept claiming it was working. This way the loop
+                // always survives, and the Error still propagates.
+                //
+                // youtubeVisible is false on that path, so the next scan comes
+                // at the idle interval rather than the fast one.
+                schedulePoll(youtubeVisible ? TARGET_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS);
             }
-            schedulePoll(youtubeVisible ? TARGET_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS);
         }
     };
 
@@ -333,10 +372,20 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         }, null);
     }
 
+    /**
+     * Nothing to abandon: this service announces no feedback and holds no
+     * long-running work.
+     *
+     * <p>Deliberately does <em>not</em> cancel the poll loop. onInterrupt means
+     * "stop whatever you are announcing", not "shut down" — the platform calls
+     * it while the service stays connected. Tearing the loop down here left
+     * scanning permanently stopped until the next YouTube accessibility event
+     * happened to arrive, which is precisely the silent-death this service is
+     * supposed to avoid. Teardown belongs in {@link #onUnbind} / {@link
+     * #onDestroy}.
+     */
     @Override
     public void onInterrupt() {
-        handler.removeCallbacks(pollRunnable);
-        pollScheduled = false;
     }
 
     /**

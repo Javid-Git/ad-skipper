@@ -10,8 +10,9 @@ so you can re-check it yourself.
 > It watches one app, reads what is on screen while that app is in the
 > foreground (including YouTube picture-in-picture), and performs exactly one
 > click on the Skip Ad button.
-> It has no permissions at all, and the Android kernel will not let it open a
-> network connection, so nothing it sees can leave the phone.
+> Its three permissions exist only to show an ongoing notification and grant no
+> access to data. It does not have `INTERNET`, so the Android kernel will not
+> let it open a network connection, and nothing it sees can leave the phone.
 
 ## What it can access
 
@@ -21,6 +22,7 @@ so you can re-check it yourself.
 | **When it runs** | A low-rate package check runs about once per second; while a YouTube or YouTube PiP window exists, the node tree is scanned about every 300ms. |
 | **What it reads** | The accessibility node tree of YouTube windows: the text, content descriptions, view IDs, bounds and clickable/enabled flags of on-screen views. This is the same information TalkBack reads aloud. |
 | **What it changes** | One thing: a node click, or one exact-bounds tap, on a single skip control it identified. |
+| **What it shows** | One silent, ongoing notification, for exactly as long as the accessibility service is connected. It carries no screen content and does no work; it exists to be visible. See [Resource cost](#resource-cost). |
 
 `flagIncludeNotImportantViews` is set, which widens the tree it reads *within
 YouTube* to include views marked unimportant for accessibility. It is needed
@@ -31,8 +33,8 @@ would otherwise be invisible to the service.
 
 | Boundary | Status |
 | --- | --- |
-| Network | **Verified impossible.** The app declares zero permissions, so it never gets GID `3003` (`AID_INET`). Android enforces `INTERNET` at the kernel level via that group, so socket creation fails regardless of what the code asks for. |
-| Any permission at all | **Verified none.** Neither requested nor granted. |
+| Network | **Verified impossible.** The app does not declare `INTERNET`, so it never gets GID `3003` (`AID_INET`). Android enforces `INTERNET` at the kernel level via that group, so socket creation fails regardless of what the code asks for. |
+| Any permission that reads data | **None.** The three it declares — `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS` — exist solely to show the keep-alive notification. None maps to a supplementary GID, and none is a runtime data permission. |
 | Screenshots | Requires `canTakeScreenshot` / `ACTION_TAKE_SCREENSHOT`. Not declared, not used. |
 | Notifications | Requires the `typeNotificationStateChanged` event type. Not registered. |
 | Other apps' screens | Events are excluded by `packageNames`; polled windows are package-checked before their trees are traversed or clicked. |
@@ -48,14 +50,19 @@ adb shell dumpsys package dev.javid.adskipper | grep -i requestedPermissions
 adb shell 'for p in $(pidof dev.javid.adskipper); do grep -i groups /proc/$p/status; done'
 ```
 
-The first prints nothing. The second prints a group list with no `3003` in it.
+The first prints exactly three entries — `FOREGROUND_SERVICE`,
+`FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS` — and no `INTERNET`. The
+second prints a group list with no `3003` in it, which is the check that
+actually matters: the kernel, not the manifest, is what makes the network
+unreachable.
 
 ### Being straight about the privilege
 
 The *platform* would allow an accessibility service to do much more than this —
 read every app, log keystrokes, press buttons anywhere. What limits this one is
-its configuration (one package), its permission set (empty), and the roughly 500 lines
-of code you can read in one sitting. That is a meaningful boundary, but it is a
+its configuration (one package), its permission set (three, none of which reach
+data, and no `INTERNET`), and the roughly 1,000 lines of code — comments
+included — that you can read in one sitting. That is a meaningful boundary, but it is a
 boundary you are trusting **this build** to hold. Which is exactly why you
 should build it yourself and never sideload someone else's APK of it.
 
@@ -103,6 +110,7 @@ description to match.
 | If this happens | What the app does |
 | --- | --- |
 | A node goes stale mid-scan (YouTube tears down a window while we read it) | The exception is caught and that one scan is dropped; the next monitor scan retries. An uncaught exception would crash the app, and **Android switches an accessibility service off when it crashes**, leaving you to re-enable it by hand. |
+| Something worse than an exception escapes a scan (`StackOverflowError` on a pathological tree, `OutOfMemoryError`) | The next scan is rescheduled from a `finally` block, so the monitor loop survives anything throwable and the Error still propagates. Without that, the loop would stop for good while the service stayed bound and the keep-alive notification kept claiming it was working. |
 | A match fires on something that is not the skip button, and keeps re-appearing | The runaway guard trips after 6 clicks in a minute and stands the service down for a minute, with a warning in the log. It does not sit there poking the UI. |
 | The same event arrives twice, or YouTube is slow to remove the overlay | The 1.5s cooldown prevents a second click landing on whatever replaced the button. |
 | A video is literally titled "Skip" | Not clicked. A bare `skip` match requires a clickable node, a skip-named ID, or a described control with a clickable ancestor, which a plain video title is not. |
@@ -111,7 +119,11 @@ description to match.
 | The ad is not skippable | There is no button, so no match, so nothing happens. Bumper and non-skippable ads are unaffected. |
 | The screen is off but audio is still playing | It still skips. This is deliberate — the hands-off case is the whole point. |
 | `ACTION_CLICK` is refused by the node | A single exact-bounds tap is attempted on the matched skip node; if that is unavailable, the failure is logged and retried on the next monitor scan. |
-| The device is out of memory | The process is killable (`oom_score_adj` 100). Android re-binds enabled accessibility services automatically, so it comes back. |
+| The device is out of memory | The process is killable. Android re-binds enabled accessibility services automatically, so it comes back. The keep-alive notification raises the process out of the "nothing user-visible here" bucket, but does not make it unkillable. |
+| A vendor memory cleaner sweeps the app (one-key clean, swipe-up clear) | Those are force stops. The binding dies, the stored setting does not, and a stopped package cannot be re-bound until you open the app. The app screen detects exactly this and says the service was stopped by the system rather than showing a false OFF. See [Keeping it running](README.md#keeping-it-running). |
+| Accessibility settings show the toggle ON but nothing is skipped | The setting and the binding have desynced — that is the state above. Toggle the service off and back on to rebind it. |
+| You deny the notification permission | The service still runs, but on Android 13+ its notification is not displayed. Skipping is unaffected; most of the protection against cleaners is lost, since what they skip over is the *visible* ongoing notification. The app asks once per launch and never nags. |
+| The platform refuses to promote the keep-alive service | Logged at warn level and the service stops itself rather than lingering as an invisible background service. Skipping is unaffected. |
 | Accessibility settings won't open on a vendor ROM | The button shows a toast with the manual path instead of crashing. |
 | The app is reinstalled or updated | The service stays enabled — the component name is unchanged. Verified across an `adb install -r`. |
 
@@ -138,14 +150,35 @@ property resets on reboot.
 Measured on a real device with the service enabled, YouTube visible, and the
 300ms polling interval active for approximately 188 seconds:
 
+Re-measured on a POCO X3 Pro (`vayu`, HyperOS) with the service enabled, the
+keep-alive notification showing, and YouTube in the foreground.
+
 | Metric | Value | What it means |
 | --- | --- | --- |
-| **CPU** | **1.56 CPU seconds / ~188 wall seconds (~0.83% of one core)** | Measured while 300ms polling was active. Polling continues while YouTube is visible, including feed browsing, not only during ads. |
-| **Total PSS** | **15.3 MB** | The most useful overall process-footprint measure because it accounts for shared pages proportionally. |
-| **Total RSS** | **105 MB** | Resident pages, including shared Android pages; this is expected to be higher than PSS. |
-| **Java heap** | **9.1 MB** | Java-managed heap reported by the device. |
-| **Process** | **`dev.javid.adskipper:accessibility`** | The accessibility service runs separately from the launcher activity, isolating service lifetime from the app screen. |
-| `oom_score_adj` | 100 | Standard service band: killable under memory pressure, and re-bound by the system afterwards. |
+| **CPU** | **1.56 CPU seconds / ~188 wall seconds (~0.83% of one core)** | Measured while 300ms polling was active. Polling continues while YouTube is visible, including feed browsing, not only during ads. Unchanged — the scanning work did not change. |
+| **Total PSS** | **25.3 MB** | Whole app in one process. Not directly comparable with the 15.3 MB recorded before: that figure covered the separate `:accessibility` process **alone** and excluded the launcher activity's process entirely. |
+| **Total RSS** | **142.4 MB** | Resident pages including shared Android pages; expected to be far higher than PSS. |
+| **Java heap** | **8.7 MB** | Java-managed heap reported by the device. |
+| **Process** | **`dev.javid.adskipper`** | Single process. A separate `:accessibility` process was tried and removed: vendor cleaners sweep per package, so it was killed anyway, and the keep-alive notification can only protect the process it lives in. |
+| **oom band** | **`vis` (visible, adj ≈ 100), flags `F/S/FGS`** | See below — this did **not** improve when the foreground service was added. |
+
+That last row is worth being blunt about. The foreground service did **not**
+move the process into a better kill band: an accessibility service is bound by
+`system_server` and was already sitting at `vis`/100 before the change. So the
+keep-alive buys nothing against low-memory reclaim that was not already there.
+Its entire value is the *visible ongoing notification* that vendor cleaner
+heuristics skip over. If you are weighing whether the three permissions are
+worth it, weigh them against that and nothing else.
+
+Reproduce the band with:
+
+```bash
+adb shell dumpsys activity oom | grep -i adskipper
+```
+
+The no-network claim was verified on the same device at the same time. The
+process runs with `gids={50441, 20441, 9997}` — app-specific groups and
+`AID_EVERYBODY`, with **no `3003`**, so the kernel refuses it a socket.
 
 Reproduce it:
 
@@ -153,13 +186,19 @@ Reproduce it:
 adb shell dumpsys meminfo dev.javid.adskipper
 ```
 
-For scale: 15.3 MB PSS is small compared with the memory footprint of YouTube
+For scale: 25.3 MB PSS is small compared with the memory footprint of YouTube
 itself, but the CPU measurement should be read together with the battery tradeoff:
 the service deliberately polls throughout the time a YouTube window is visible.
 It does not claim that battery impact is zero; battery drain was not measured in
 this run.
 
-The service has no wake lock, foreground-service notification, network, or
-dependencies. Outside YouTube it performs only a low-rate package/window check;
-while YouTube is visible it scans every 300ms so sparse accessibility events do
-not make the skip window disappear unnoticed.
+The service has no wake lock, no network, and no dependencies. Outside YouTube
+it performs only a low-rate package/window check; while YouTube is visible it
+scans every 300ms so sparse accessibility events do not make the skip window
+disappear unnoticed.
+
+It does hold one silent, ongoing notification while enabled — see
+[Keeping it running](README.md#keeping-it-running) for why, and for what that
+does and does not protect against. The notification service does no work of its
+own: it exists to be visible, and stops as soon as the accessibility service
+disconnects.

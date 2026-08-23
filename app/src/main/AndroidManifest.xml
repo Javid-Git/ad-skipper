@@ -1,6 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+        These three exist only so KeepAliveService can hold an ongoing
+        notification. None of them grants access to data: none maps to a
+        supplementary GID, and none is a runtime data permission.
+
+        INTERNET is deliberately still absent, which is what keeps "nothing it
+        reads can leave the device" a kernel-enforced fact rather than a
+        promise. See SECURITY.md.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -25,18 +38,25 @@
             the device can bind to this service.
         -->
         <!--
-            Keep the accessibility service independent from the launcher
-            activity. Removing the app's task from Recents must not tear down
-            the service or make Android treat the app as no longer running.
-            (A user-invoked Force stop is intentionally still terminal and
-            cannot be bypassed by an ordinary app.)
+            stopWithTask="false" keeps the service alive when the app's task is
+            swiped out of Recents. (It is also the platform default; stated
+            explicitly because it is load-bearing here, not incidental.)
+
+            This deliberately runs in the app's main process, alongside
+            KeepAliveService. A separate ":accessibility" process was tried and
+            removed: vendor cleaners sweep per package, not per process, so it
+            killed both anyway, while costing a second ART runtime. The ongoing
+            notification is what actually protects the process now, and it can
+            only do that for the process it lives in.
+
+            A user-invoked Force stop remains terminal and cannot be bypassed
+            by an ordinary app.
         -->
         <service
             android:name=".SkipAdAccessibilityService"
             android:exported="true"
             android:label="@string/accessibility_service_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:process=":accessibility"
             android:stopWithTask="false">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -44,6 +64,25 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!--
+            exported="false": nothing outside this app ever needs to start it.
+            It is started by SkipAdAccessibilityService when that service
+            connects, and stopped when it disconnects.
+
+            specialUse is the honest type. The platform's typed categories
+            (mediaPlayback, dataSync, location, ...) all describe work this
+            service does not do; it holds a notification and nothing else.
+        -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the accessibility service's process resident so vendor memory cleaners do not silently stop ad skipping." />
         </service>
 
     </application>
