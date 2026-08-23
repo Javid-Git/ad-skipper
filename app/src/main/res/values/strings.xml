@@ -4,10 +4,11 @@
 
     <!-- Shown in Settings > Accessibility next to the service toggle. -->
     <string name="accessibility_service_label">Ad Skipper</string>
-    <string name="accessibility_service_description">Watches the YouTube app for the &quot;Skip Ad&quot; button and taps it for you as soon as it appears. Reads screen content from YouTube only.</string>
+    <string name="accessibility_service_description">Watches YouTube and its picture-in-picture window for a visible &quot;Skip Ad&quot; control and activates it when it appears. Reads screen content from YouTube only.</string>
 
     <string name="status_enabled">Service is ON. Skippable YouTube ads will be skipped automatically.</string>
     <string name="status_disabled">Service is OFF. Turn it on to start skipping ads.</string>
+    <string name="status_not_running">Service is enabled, but its process is not running. Toggle Ad Skipper off and on in Accessibility settings.</string>
 
     <string name="setup_instructions">Android does not let an app switch on its own accessibility service, so this last step is manual:\n\nSettings &gt; Accessibility &gt; Installed apps &gt; Ad Skipper &gt; On</string>
 

@@ -13,17 +13,19 @@ device and use it there.
 
 1. The service is registered against `com.google.android.youtube` only. Events
    from every other app on the device never reach it.
-2. On each UI change it looks for the skip control, preferring YouTube's own view
-   IDs (language-independent) and falling back to matching the label text and
-   content description.
-3. Because the label itself usually isn't the clickable element, it walks up the
+2. It monitors YouTube's accessibility windows at a low rate, increasing to
+   roughly every 300ms while YouTube or its picture-in-picture window exists.
+3. Each scan looks for the skip control, using YouTube view IDs when available
+   and falling back to label text and content descriptions. IDs are optional;
+   some real-device ad overlays expose none.
+4. Because the label itself usually isn't the clickable element, it walks up the
    node tree to the nearest clickable ancestor.
-4. It calls `ACTION_CLICK` on that node — a programmatic click on a specific
-   view, not a simulated tap at screen coordinates.
+5. It calls `ACTION_CLICK` on that node. If YouTube exposes the control but
+   refuses the node action, it falls back to one tap at that matched node's
+   exact screen bounds.
 
-No artificial delay is needed. YouTube doesn't put the skip control in the view
-hierarchy until the ad is actually skippable (~5s in), so the service naturally
-fires at the first moment a click can succeed.
+The monitor does not depend on one perfectly timed content-change event. It scans
+the current YouTube window and interactive PiP windows until the control appears.
 
 ## Requirements
 
@@ -56,9 +58,9 @@ gradlew.bat assembleDebug     # Windows
 ./gradlew assembleDebug       # macOS / Linux
 ```
 
-The APK lands at `app/build/outputs/apk/debug/app-debug.apk`, and comes out
-around 47 KB. Android Studio uses the wrapper by default, so opening the project
-directory there works too.
+The APK lands at `app/build/outputs/apk/debug/app-debug.apk`, and the current
+debug build comes out around 59 KB. Android Studio uses the wrapper by default,
+so opening the project directory there works too.
 
 If you'd rather use Android Studio, just open the project directory — it's a
 standard Gradle project. `local.properties` is machine-specific and gitignored;
@@ -79,20 +81,21 @@ be this project, don't run it.
 The same reasoning cuts the other way, too: **this code is a short edit away from
 being spyware.** Widen `packageNames` to cover every app, add
 `<uses-permission android:name="android.permission.INTERNET"/>`, and the same
-~270 lines become a screen scraper that phones home. Nothing here is novel — it
+roughly 500 lines become a screen scraper that phones home. Nothing here is novel — it
 is a documented Android API — but if you are reading a *fork* of this project,
 diff it against upstream before you build it, and check the manifest for added
 permissions.
 
 What this build actually does is scoped as tightly as the platform allows: it
-sees YouTube's package only, re-checks the foreground app before every click, and
-declares **zero permissions** — which means it never receives GID `3003`, and the
-kernel refuses to let it open a network socket. Nothing it reads can leave the
-device.
+reads only windows whose package is YouTube, re-checks that package before every
+scan and click, and declares **zero permissions** — which means it never receives
+GID `3003`, and the kernel refuses to let it open a network socket. Nothing it
+reads can leave the device.
 
 [SECURITY.md](SECURITY.md) documents the full access boundary, the
-event-to-click flow, every failure mode, and the measured RAM and CPU cost, with
-a command under each claim so you can verify it rather than believe it.
+monitor-to-click flow, every failure mode, and the measured RAM, CPU, and battery
+tradeoff, with a command under each claim so you can verify it rather than
+believe it.
 
 ## Install and enable
 
@@ -107,6 +110,23 @@ accessibility service — this step is deliberately manual:
 
 Launching the app shows whether the service is currently running and has a
 button that takes you straight to that settings page.
+
+The status check validates the master Accessibility switch, Ad Skipper's entry
+in the enabled-service list, and the dedicated `:accessibility` process. If a
+vendor ROM leaves the enabled list stale after stopping the service, the app
+reports that the service is not running instead of showing a false ON state.
+
+The accessibility service runs in a separate process from this screen, so
+closing the app or swiping it away from Recents does not turn the service off.
+Android still stops every component when you explicitly use **Force stop** in
+the app's system settings; reopen the app and enable the service again after
+that.
+
+The accessibility service scans every 300ms while any YouTube window is
+visible, not only while an ad is playing. On the reference device this measured
+1.56 CPU seconds over roughly 188 wall-clock seconds (~0.83% of one core), with
+15.3 MB PSS, 105 MB RSS, and a 9.1 MB Java heap. That is a small CPU cost, but it
+is a deliberate battery tradeoff while browsing YouTube.
 
 ## Verify it works
 
@@ -143,19 +163,19 @@ adb shell setprop log.tag.AdSkipper DEBUG
 adb shell uiautomator dump /sdcard/ui.xml && adb pull /sdcard/ui.xml
 ```
 
-On the YouTube build this was tested against, the skip button is a `FrameLayout`
-with view ID `skip_ad_button` and **no text and no content description at all**
-— so only `SKIP_VIEW_IDS` matches it, and the label tiers below never fire. Check
-the view ID first; it is the one that does the work in practice.
+View IDs are useful when present, but real devices and YouTube server-side
+experiments may expose an ad overlay with `resource-id=""`. In that case the
+label/content-description tiers are the only available signal. Dump the live
+tree on the affected device and use the actual control description or text.
 
 Find the skip button in `ui.xml` and add what you see to whichever list fits, in
 [SkipAdAccessibilityService.java](app/src/main/java/dev/javid/adskipper/SkipAdAccessibilityService.java):
 
 | List | Use it for | Trusted on its own? |
 | --- | --- | --- |
-| `SKIP_VIEW_IDS` | `resource-id` values, e.g. `skip_ad_button` | Yes — most stable, survives translation |
+| `SKIP_VIEW_IDS` | `resource-id` values, e.g. `skip_ad_button` | Yes when present; some overlays have none |
 | `UNAMBIGUOUS_SKIP_LABELS` | Text that can only mean ad-skip, e.g. `skip ad` | Yes — matched as a prefix of normalised text |
-| `AMBIGUOUS_SKIP_LABELS` | Generic words like `skip` | Only when the node is also clickable, or its view ID mentions skipping |
+| `AMBIGUOUS_SKIP_LABELS` | Generic words like `skip` | Only for a clickable node, a skip-named ID, or a described node with a clickable ancestor |
 
 That last distinction matters: a bare `skip` match would otherwise fire on a
 video merely *titled* "Skip" and open it. Labels are normalised to lowercase

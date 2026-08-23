@@ -2,22 +2,30 @@
 <!--
     Scopes the service as tightly as the platform allows.
 
-    packageNames        - the service is only ever woken for YouTube. Events from
-                          every other app on the device never reach it.
+    packageNames        - accessibility events are delivered for YouTube only.
+                          The adaptive monitor separately checks window package
+                          names so it can find YouTube PiP without reading other
+                          apps' trees.
     accessibilityFlags  - flagReportViewIds populates getViewIdResourceName(),
                           which is the most stable way to spot the skip button.
                           flagIncludeNotImportantViews is needed because the
                           clickable ancestor of the label is sometimes marked
                           not-important-for-accessibility, which would otherwise
                           hide it from the node tree entirely.
-    notificationTimeout - coalesces YouTube's very chatty content-change events
-                          in the framework before they ever reach us.
+                          flagRetrieveInteractiveWindows lets the service find
+                          YouTube's picture-in-picture window when another app
+                          owns the active window.
+                          canPerformGestures enables the exact-bounds fallback
+                          for YouTube controls that refuse ACTION_CLICK.
+    notificationTimeout - coalesces YouTube's very chatty content-change events;
+                          polling remains the safety net when events are sparse.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowContentChanged|typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews"
+    android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"
+    android:canPerformGestures="true"
     android:description="@string/accessibility_service_description"
     android:notificationTimeout="100"
     android:packageNames="com.google.android.youtube"

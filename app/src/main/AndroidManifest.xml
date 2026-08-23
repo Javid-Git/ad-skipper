@@ -24,11 +24,20 @@
             signature-level permission only the system holds, so nothing else on
             the device can bind to this service.
         -->
+        <!--
+            Keep the accessibility service independent from the launcher
+            activity. Removing the app's task from Recents must not tear down
+            the service or make Android treat the app as no longer running.
+            (A user-invoked Force stop is intentionally still terminal and
+            cannot be bypassed by an ordinary app.)
+        -->
         <service
             android:name=".SkipAdAccessibilityService"
             android:exported="true"
             android:label="@string/accessibility_service_label"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:process=":accessibility"
+            android:stopWithTask="false">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>

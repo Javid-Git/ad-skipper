@@ -1,11 +1,17 @@
 package dev.javid.adskipper;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.GestureDescription;
+import android.graphics.Path;
+import android.graphics.Rect;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 
 import java.util.ArrayDeque;
 import java.util.List;
@@ -14,21 +20,24 @@ import java.util.Locale;
 /**
  * Watches YouTube's UI and clicks the "Skip Ad" control as soon as it appears.
  *
- * <p>No timer is involved. YouTube does not put the skip control in the view
- * hierarchy until the ad becomes skippable (~5s in), so the service naturally
- * fires at the first moment a click can succeed.
+ * <p>The service uses accessibility events for prompt wakeups and an adaptive
+ * foreground monitor as a safety net. It scans about once per second while
+ * YouTube is absent and every 300ms while a YouTube window exists, including a
+ * picture-in-picture window.
  *
- * <p>The click is {@link AccessibilityNodeInfo#ACTION_CLICK} on the node itself,
- * not a synthesised screen tap, so it cannot land somewhere unintended if the
- * player is laid out differently than expected.
+ * <p>The service first uses {@link AccessibilityNodeInfo#ACTION_CLICK} on the
+ * matched control. If a YouTube release exposes the control but refuses that
+ * action, it falls back to one short tap at the matched node's own bounds.
  *
  * <h2>What this service can and cannot reach</h2>
  * <ul>
- *   <li>It is woken only for {@code com.google.android.youtube}; the framework
- *       filters every other app out before this code runs.</li>
+ *   <li>Accessibility events are limited to {@code com.google.android.youtube};
+ *       the framework filters every other app out before this code runs. The
+ *       low-rate monitor checks only the active window package, then reads a
+ *       tree only when it finds YouTube.</li>
  *   <li>It reads the on-screen node tree. It never types, scrolls, or swipes,
  *       and the only action it performs is a click on a node it identified as
- *       the skip control.</li>
+ *       the skip control (using the node action or that node's exact bounds).</li>
  *   <li>The app declares <em>no permissions at all</em> — notably not
  *       {@code INTERNET} — so nothing it reads can leave the device.</li>
  *   <li>Screen text is written to the log only when someone explicitly turns
@@ -48,8 +57,9 @@ public class SkipAdAccessibilityService extends AccessibilityService {
     private static final String TARGET_PACKAGE = "com.google.android.youtube";
 
     /**
-     * The most reliable signal when present: YouTube's own view IDs. Checked
-     * before any text matching, and unaffected by device language. Requires
+     * An optional fast path when present: YouTube's own view IDs. Checked
+     * before text matching and unaffected by device language, but some real
+     * device ad overlays expose no resource ID at all. Requires
      * {@code flagReportViewIds} in the service config.
      */
     private static final String[] SKIP_VIEW_IDS = {
@@ -81,8 +91,14 @@ public class SkipAdAccessibilityService extends AccessibilityService {
             "skip",
     };
 
-    /** Floor on how often the tree is scanned. YouTube emits events in bursts. */
+    /** Floor on how often the tree is scanned while a YouTube window exists. */
     private static final long SCAN_THROTTLE_MS = 200L;
+
+    /** Poll interval while YouTube is present, including picture-in-picture. */
+    private static final long TARGET_POLL_INTERVAL_MS = 300L;
+
+    /** Low-rate monitor used to notice YouTube opening without an event. */
+    private static final long IDLE_POLL_INTERVAL_MS = 1_000L;
 
     /**
      * Quiet period after a successful click. Without it the same button can be
@@ -91,11 +107,14 @@ public class SkipAdAccessibilityService extends AccessibilityService {
      */
     private static final long CLICK_COOLDOWN_MS = 1_500L;
 
-    /** Bounds the per-event scan so a pathological tree cannot stall the UI. */
+    /** Bounds each scan so a pathological tree cannot stall the service. */
     private static final int MAX_NODES_VISITED = 800;
 
     /** How far up from the label to look for something clickable. */
     private static final int MAX_ANCESTOR_HOPS = 8;
+
+    /** Short, human-like tap used only when YouTube refuses ACTION_CLICK. */
+    private static final long FALLBACK_TAP_DURATION_MS = 80L;
 
     /**
      * Runaway guard. Watching real ads produces at most a couple of clicks a
@@ -108,16 +127,37 @@ public class SkipAdAccessibilityService extends AccessibilityService {
     private static final long CLICK_WINDOW_MS = 60_000L;
     private static final long BACKOFF_MS = 60_000L;
 
+    /** The debug tree snapshot is verbose, so it is rate limited hard. */
+    private static final long SNAPSHOT_THROTTLE_MS = 3_000L;
+
+    /** Cap on how many nodes one snapshot lists. */
+    private static final int SNAPSHOT_MAX_NODES = 60;
+
     private long lastScanAt;
     private long lastClickAt;
+    private long lastSnapshotAt;
     private long clickWindowStartAt;
     private int clicksInWindow;
     private long backoffUntil;
+
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private boolean pollScheduled;
+
+    /**
+     * How often the counters below are reported. They distinguish a quiet event
+     * stream from monitor scans that cannot find a readable YouTube window.
+     */
+    private static final long COUNTER_REPORT_MS = 10_000L;
+
+    private int eventsSeen;
+    private int windowUnreadable;
+    private long lastCounterReportAt;
 
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
         Log.i(TAG, "Service connected; watching " + TARGET_PACKAGE);
+        schedulePoll(0L);
     }
 
     @Override
@@ -128,16 +168,73 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         // the accessibility service off — leaving the user to re-enable it by
         // hand in Settings. Dropping one event is a far better outcome.
         try {
-            handleEvent(event);
+            eventsSeen++;
+            // The adaptive monitor is always alive; an event also makes sure
+            // it is scheduled if a vendor interrupted the callback lifecycle.
+            schedulePoll(0L);
         } catch (RuntimeException e) {
-            Log.w(TAG, "Ignoring error while scanning for the skip button", e);
+            Log.w(TAG, "Ignoring error while scheduling a YouTube scan", e);
         }
     }
 
-    private void handleEvent(AccessibilityEvent event) {
-        if (event == null) {
+    private final Runnable pollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            pollScheduled = false;
+            boolean youtubeVisible = false;
+            try {
+                youtubeVisible = scanCurrentWindows();
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Ignoring error while polling YouTube", e);
+            }
+            schedulePoll(youtubeVisible ? TARGET_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS);
+        }
+    };
+
+    private void schedulePoll(long delayMs) {
+        if (pollScheduled) {
             return;
         }
+        pollScheduled = true;
+        handler.postDelayed(pollRunnable, delayMs);
+    }
+
+    /** Scans the active root and, when needed, all interactive windows for PiP. */
+    private boolean scanCurrentWindows() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (isTargetRoot(root)) {
+            reportCounters(SystemClock.uptimeMillis(), root);
+            scanRoot(root);
+            return true;
+        }
+
+        // In PiP the launcher or another app may own the active window even
+        // though YouTube's small window is still visible and interactive.
+        List<AccessibilityWindowInfo> windows = getWindows();
+        if (windows != null) {
+            for (AccessibilityWindowInfo window : windows) {
+                if (window == null) {
+                    continue;
+                }
+                AccessibilityNodeInfo windowRoot = window.getRoot();
+                if (isTargetRoot(windowRoot)) {
+                    reportCounters(SystemClock.uptimeMillis(), windowRoot);
+                    scanRoot(windowRoot);
+                    return true;
+                }
+            }
+        }
+
+        windowUnreadable++;
+        reportCounters(SystemClock.uptimeMillis(), root);
+        return false;
+    }
+
+    private static boolean isTargetRoot(AccessibilityNodeInfo root) {
+        return root != null && TARGET_PACKAGE.equals(asString(root.getPackageName()));
+    }
+
+    private void scanRoot(AccessibilityNodeInfo root) {
 
         final long now = SystemClock.uptimeMillis();
         if (now < backoffUntil
@@ -150,35 +247,96 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         // Nodes are deliberately not recycled. recycle() is deprecated as of
         // API 33 and the platform pools these itself; releasing a node that is
         // still referenced throws, which is a worse failure than the churn.
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null || !TARGET_PACKAGE.equals(asString(root.getPackageName()))) {
-            return;
-        }
-
         AccessibilityNodeInfo label = findSkipNode(root);
         if (label == null) {
+            logTreeSnapshot(root, now);
             return;
         }
 
         AccessibilityNodeInfo clickable = nearestClickable(label);
-        if (clickable == null) {
-            Log.d(TAG, "Found a skip label but no clickable ancestor within "
-                    + MAX_ANCESTOR_HOPS + " hops " + describe(label));
+        if (clickable != null
+                && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            recordSuccessfulClick(clickable, "ACTION_CLICK");
             return;
         }
 
-        if (clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-            lastClickAt = SystemClock.uptimeMillis();
-            recordClick(lastClickAt);
-            Log.i(TAG, "Skipped ad " + describe(clickable));
-        } else {
-            Log.d(TAG, "ACTION_CLICK refused " + describe(clickable));
+        // Some YouTube releases expose the button's label but do not mark the
+        // label or any nearby ancestor clickable. Try the matched node itself
+        // before falling back to its exact on-screen bounds.
+        if (clickable != label
+                && label.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            recordSuccessfulClick(label, "ACTION_CLICK on matched node");
+            return;
         }
+
+        if (dispatchFallbackTap(label)) {
+            recordSuccessfulClick(label, "coordinate fallback");
+        } else if (clickable == null) {
+            Log.d(TAG, "Found a skip label but no clickable ancestor within "
+                    + MAX_ANCESTOR_HOPS + " hops and its bounds could not be tapped "
+                    + describe(label));
+        } else {
+            Log.d(TAG, "ACTION_CLICK refused and coordinate fallback was unavailable "
+                    + describe(clickable));
+        }
+    }
+
+    /**
+     * Reports how many events have arrived and how many monitor scans yielded no
+     * readable YouTube window. Logged at info level, and deliberately carries
+     * no screen content — only the package name of the refused root.
+     */
+    private void reportCounters(long now, AccessibilityNodeInfo root) {
+        if (now - lastCounterReportAt < COUNTER_REPORT_MS) {
+            return;
+        }
+        lastCounterReportAt = now;
+        Log.i(TAG, "Events seen " + eventsSeen + ", unreadable window "
+                + windowUnreadable + ", last root package "
+                + (root == null ? "null" : asString(root.getPackageName())));
+    }
+
+    private void recordSuccessfulClick(AccessibilityNodeInfo node, String method) {
+        lastClickAt = SystemClock.uptimeMillis();
+        recordClick(lastClickAt);
+        Log.i(TAG, "Skipped ad via " + method + " " + describe(node));
+    }
+
+    /**
+     * Performs a tap at the matched node's bounds. This is needed for custom
+     * YouTube controls that are visible to accessibility but do not expose a
+     * clickable node. The target is still constrained to a matched YouTube
+     * skip node; this is not a general screen-tapping fallback.
+     */
+    private boolean dispatchFallbackTap(AccessibilityNodeInfo node) {
+        if (node == null || !node.isVisibleToUser() || !node.isEnabled()) {
+            return false;
+        }
+
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (bounds.isEmpty() || bounds.centerX() < 0 || bounds.centerY() < 0) {
+            return false;
+        }
+
+        Path tapPath = new Path();
+        tapPath.moveTo(bounds.centerX(), bounds.centerY());
+        GestureDescription gesture = new GestureDescription.Builder()
+                .addStroke(new GestureDescription.StrokeDescription(
+                        tapPath, 0L, FALLBACK_TAP_DURATION_MS))
+                .build();
+        return dispatchGesture(gesture, new GestureResultCallback() {
+            @Override
+            public void onCancelled(GestureDescription gestureDescription) {
+                Log.d(TAG, "Fallback tap was cancelled " + describe(node));
+            }
+        }, null);
     }
 
     @Override
     public void onInterrupt() {
-        // Nothing to abandon: the service holds no long-running work.
+        handler.removeCallbacks(pollRunnable);
+        pollScheduled = false;
     }
 
     /**
@@ -200,7 +358,8 @@ public class SkipAdAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * Locates the skip control, preferring view IDs over text.
+     * Locates the skip control, using view IDs when available and otherwise
+     * falling back to text and content descriptions.
      *
      * @return the matching node, or {@code null} if this screen has no skip control
      */
@@ -251,9 +410,9 @@ public class SkipAdAccessibilityService extends AccessibilityService {
      * Decides whether a node is the skip control.
      *
      * <p>Unambiguous labels ("Skip Ad") are trusted outright. Generic ones
-     * ("Skip") are only trusted when the node is itself clickable or its view ID
-     * mentions skipping, which is enough to separate a real button from a video
-     * whose title happens to be the same word.
+     * ("Skip") are only trusted when the node looks like a control, including a
+     * described node with a clickable ancestor, which separates it from a plain
+     * video title.
      */
     private boolean isSkipTarget(AccessibilityNodeInfo node) {
         if (!node.isVisibleToUser()) {
@@ -274,7 +433,12 @@ public class SkipAdAccessibilityService extends AccessibilityService {
 
         for (String label : AMBIGUOUS_SKIP_LABELS) {
             if (label.equals(text) || label.equals(description)) {
-                return node.isClickable() || mentionsSkip(node.getViewIdResourceName());
+                // A custom YouTube control may expose only a short content
+                // description on a non-clickable label. In that case the
+                // clickable ancestor is still enough to identify the control.
+                return node.isClickable()
+                        || mentionsSkip(node.getViewIdResourceName())
+                        || (label.equals(description) && nearestClickable(node) != null);
             }
         }
         return false;
@@ -330,6 +494,63 @@ public class SkipAdAccessibilityService extends AccessibilityService {
 
     private static String asString(CharSequence value) {
         return value == null ? "" : value.toString();
+    }
+
+    /**
+     * Logs what the current YouTube window actually contains when nothing
+     * matched, so the real labels and view IDs of the skip control can be read
+     * off a live device and added to the lists above.
+     *
+     * <p>Gated behind content logging, and throttled, because it is verbose and
+     * puts on-screen text into logcat. This exists because
+     * {@code adb shell uiautomator dump} refuses to run on some vendor builds
+     * (it fails outright on MIUI), which otherwise leaves no way to inspect the
+     * tree on the device where skipping is actually broken.
+     */
+    private void logTreeSnapshot(AccessibilityNodeInfo root, long now) {
+        if (!contentLoggingEnabled() || now - lastSnapshotAt < SNAPSHOT_THROTTLE_MS) {
+            return;
+        }
+        lastSnapshotAt = now;
+
+        ArrayDeque<AccessibilityNodeInfo> queue = new ArrayDeque<>();
+        queue.add(root);
+
+        int visited = 0;
+        int withViewId = 0;
+        int shown = 0;
+        StringBuilder detail = new StringBuilder();
+
+        while (!queue.isEmpty() && visited < MAX_NODES_VISITED) {
+            AccessibilityNodeInfo node = queue.poll();
+            if (node == null) {
+                continue;
+            }
+            visited++;
+            if (node.getViewIdResourceName() != null) {
+                withViewId++;
+            }
+
+            boolean worthShowing = !TextUtils.isEmpty(node.getText())
+                    || !TextUtils.isEmpty(node.getContentDescription())
+                    || node.isClickable();
+            if (worthShowing && shown < SNAPSHOT_MAX_NODES) {
+                shown++;
+                detail.append("\n  clickable=").append(node.isClickable())
+                        .append(' ').append(describe(node));
+            }
+
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) {
+                    queue.add(child);
+                }
+            }
+        }
+
+        Log.d(TAG, "No skip control matched: " + visited + " nodes, " + withViewId
+                + " carrying a view id, listing " + shown + " with text/description/clickable:"
+                + detail);
     }
 
     /**

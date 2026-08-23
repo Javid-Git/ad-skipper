@@ -2,6 +2,7 @@ package dev.javid.adskipper;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.Intent;
@@ -55,25 +56,28 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         // Re-read on every resume so returning from Settings reflects the change.
-        statusView.setText(isSkipServiceEnabled()
-                ? R.string.status_enabled
-                : R.string.status_disabled);
+        statusView.setText(getServiceStatusText());
     }
 
     /**
-     * @return whether this app's own accessibility service is currently enabled
+     * Requires the platform switch, this component's enabled-list entry, and
+     * the dedicated accessibility process. The enabled list can remain stale
+     * on vendor ROMs after the master switch or service binding has died.
      */
-    private boolean isSkipServiceEnabled() {
+    private int getServiceStatusText() {
         AccessibilityManager manager = getSystemService(AccessibilityManager.class);
         if (manager == null) {
-            return false;
+            return R.string.status_disabled;
+        }
+        if (!manager.isEnabled()) {
+            return R.string.status_disabled;
         }
 
         ComponentName self = new ComponentName(this, SkipAdAccessibilityService.class);
         List<AccessibilityServiceInfo> enabled = manager.getEnabledAccessibilityServiceList(
                 AccessibilityServiceInfo.FEEDBACK_ALL_MASK);
         if (enabled == null) {
-            return false;
+            return R.string.status_disabled;
         }
 
         // Compared component-wise rather than against getId(), whose exact
@@ -85,6 +89,30 @@ public class MainActivity extends Activity {
             }
             if (self.getPackageName().equals(resolved.serviceInfo.packageName)
                     && self.getClassName().equals(resolved.serviceInfo.name)) {
+                if (isAccessibilityProcessRunning()) {
+                    return R.string.status_enabled;
+                }
+                return R.string.status_not_running;
+            }
+        }
+        return R.string.status_disabled;
+    }
+
+    private boolean isAccessibilityProcessRunning() {
+        ActivityManager activityManager = getSystemService(ActivityManager.class);
+        if (activityManager == null) {
+            return false;
+        }
+
+        List<ActivityManager.RunningAppProcessInfo> processes =
+                activityManager.getRunningAppProcesses();
+        if (processes == null) {
+            return false;
+        }
+
+        String expectedProcess = getPackageName() + ":accessibility";
+        for (ActivityManager.RunningAppProcessInfo process : processes) {
+            if (process != null && expectedProcess.equals(process.processName)) {
                 return true;
             }
         }
