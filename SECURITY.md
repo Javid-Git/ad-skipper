@@ -23,7 +23,7 @@ so you can re-check it yourself.
 | **When it runs** | A low-rate package check runs about once per second; while a YouTube or YouTube PiP window exists, the node tree is scanned about every 300ms. |
 | **What it reads** | The accessibility node tree of YouTube windows: the text, content descriptions, view IDs, bounds and clickable/enabled flags of on-screen views. This is the same information TalkBack reads aloud. |
 | **What it changes** | One thing: a node click, or one exact-bounds tap, on a single skip control it identified. |
-| **What it shows** | One silent, ongoing notification, for exactly as long as the accessibility service is connected. It carries no screen content and does no work; it exists to be visible. See [Resource cost](#resource-cost). |
+| **What it shows** | One silent, ongoing notification, for exactly as long as the accessibility service is connected. It carries no screen content and does no work; it exists to be visible, and to say which of three things is true: **active**, **NOT CONFIGURED**, or **INACTIVE**. See [Resource cost](#resource-cost). |
 
 `flagIncludeNotImportantViews` is set, which widens the tree it reads *within
 YouTube* to include views marked unimportant for accessibility. It is needed
@@ -42,6 +42,7 @@ would otherwise be invisible to the service.
 | Typing, swiping, scrolling, back/home | The code performs no gesture other than the one exact-bounds fallback tap on the matched skip control. |
 | Files, contacts, accounts, clipboard, camera, mic, location | All require permissions it does not declare. |
 | Backup / cloud sync of app data | `allowBackup="false"` in the manifest. |
+| Anything stored on disk | One boolean in `SharedPreferences`: whether you confirmed the step the app cannot verify. Nothing else is written. |
 | Your screen contents in logs | Off by default. Node text is logged only after you explicitly opt in (see below). |
 
 Verify the first two yourself:
@@ -63,7 +64,7 @@ unreachable.
 The *platform* would allow an accessibility service to do much more than this —
 read every app, log keystrokes, press buttons anywhere. What limits this one is
 its configuration (one package), its permission set (four, none of which reach
-data, and no `INTERNET`), and the roughly 1,000 lines of code — comments
+data, and no `INTERNET`), and the roughly 1,500 lines of code — comments
 included — that you can read in one sitting. That is a meaningful boundary, but it is a
 boundary you are trusting **this build** to hold. Which is exactly why you
 should build it yourself and never sideload someone else's APK of it.
@@ -123,6 +124,8 @@ description to match.
 | `ACTION_CLICK` is refused by the node | A single exact-bounds tap is attempted on the matched skip node; if that is unavailable, the failure is logged and retried on the next monitor scan. |
 | The device is out of memory | The process is killable. Android re-binds enabled accessibility services automatically, so it comes back. The keep-alive notification raises the process out of the "nothing user-visible here" bucket, but does not make it unkillable. |
 | A device memory cleaner sweeps the app (a "clear all apps" action) | Those are force stops. The binding dies, the stored setting does not, and a stopped package cannot be re-bound until you open the app. The app screen detects exactly this and says the service was stopped by the system rather than showing a false OFF. See [Keeping it running](README.md#keeping-it-running). |
+| You enable the service from system Settings, bypassing the app's setup gate | It works, and says so honestly: the notification reads **NOT CONFIGURED** rather than **active**. The gate covers the app screen only — it cannot and does not try to block the system settings route. What it can do is refuse to claim everything is fine when the setup that keeps it running has not been done. |
+| A setup check passes, then the user revokes it later | Re-evaluated at most once a minute while the service runs, and on every resume of the app screen. The notification drops to **NOT CONFIGURED** without needing a restart. |
 | Accessibility settings show the toggle ON but nothing is skipped | The setting and the binding have desynced — that is the state above. Toggle the service off and back on to rebind it. |
 | The service is bound with full capabilities but the platform serves it nothing | Happens after a force stop: the component lands in the platform's crashed set and on some vendor ROMs that flag survives the rebind. Nothing else on the device reveals it — it still appears under `Bound services` with `capabilities=33`. The service detects it by the window count (a healthy service always sees at least the status and navigation bars; a blind one sees zero), and changes both the notification and the app screen to say it has stopped working. Confirmed over three consecutive reports — about 20s, since the first fires on connect — and only while the screen is on, so a transient blip cannot raise a false alarm. Toggle off and on to clear it. |
 | You deny the notification permission | The service still runs, but on Android 13+ its notification is not displayed. Skipping is unaffected; most of the protection against cleaners is lost, since what they skip over is the *visible* ongoing notification. The app asks once per launch and never nags. |

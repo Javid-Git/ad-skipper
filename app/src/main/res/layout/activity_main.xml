@@ -137,6 +137,23 @@
                     android:textSize="14sp" />
             </LinearLayout>
 
+            <!--
+                Full width and directly under the instructions, because the
+                Recents lock is the step people skip and it is the one that
+                decides whether the service survives.
+            -->
+            <Button
+                android:id="@+id/recents_help"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/bg_button_secondary"
+                android:stateListAnimator="@null"
+                android:text="@string/recents_lock_help"
+                android:textAllCaps="false"
+                android:textColor="@color/accent"
+                android:textSize="14sp" />
+
             <CheckBox
                 android:id="@+id/attest"
                 android:layout_width="match_parent"

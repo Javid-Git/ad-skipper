@@ -62,7 +62,7 @@ gradlew.bat assembleDebug     # Windows
 ```
 
 The APK lands at `app/build/outputs/apk/debug/app-debug.apk`, and the current
-debug build comes out around 56 KB. Android Studio uses the wrapper by default,
+debug build comes out around 71 KB. Android Studio uses the wrapper by default,
 so opening the project directory there works too.
 
 If you'd rather use Android Studio, just open the project directory — it's a
@@ -84,7 +84,7 @@ be this project, don't run it.
 The same reasoning cuts the other way, too: **this code is a short edit away from
 being spyware.** Widen `packageNames` to cover every app, add
 `<uses-permission android:name="android.permission.INTERNET"/>`, and the same
-roughly 1,000 lines become a screen scraper that phones home. Nothing here is novel — it
+roughly 1,500 lines become a screen scraper that phones home. Nothing here is novel — it
 is a documented Android API — but if you are reading a *fork* of this project,
 diff it against upstream before you build it, and check the manifest for added
 permissions.
@@ -132,12 +132,21 @@ route to Accessibility settings until they pass**:
 | --- | --- |
 | The YouTube app is installed | `getPackageInfo`, via a `<queries>` entry |
 | Notifications are allowed | `areNotificationsEnabled()` and channel importance |
-| Battery restrictions are removed | `isIgnoringBatteryOptimizations()` |
-| The device lets it run in the background | **not verifiable — you confirm it** |
+| Battery optimisation is off | `isIgnoringBatteryOptimizations()` |
+| Locked in Recents, and auto-start allowed | **not verifiable — you confirm it** |
 
-That last one has no API. Auto-start permissions are vendor app-ops with no
-public name, and whether an app is pinned in Recents is not exposed at all. The
-app says so on screen rather than showing a tick it cannot stand behind.
+Those last two are required, not optional — auto-start being blocked is the most
+common reason the service ends up enabled but dead. They are in a separate
+section on screen only because neither can be read: auto-start permissions are
+vendor app-ops with no public name, and whether an app is pinned in Recents is
+not exposed at all. The app says so rather than showing a tick it cannot stand
+behind.
+
+They are also a different thing from the battery check above it, which is worth
+being explicit about because the two sound alike. The battery check is Android's
+own Doze exemption — a standard API the app reads directly. The other two are
+the device's protections against a package being force-closed, which is a
+separate mechanism entirely, and no API reports them.
 
 The gate exists because enabling the service before the device is set up to keep
 it running produces an app that works for ten minutes and then stops silently —
@@ -205,7 +214,7 @@ marks the package stopped, and a stopped package cannot be started by anything
 except you opening it. Several vendor skins implement their memory cleaners as
 force stops, which is why this shows up on those devices and rarely on a Pixel.
 
-Two things help.
+Three things help.
 
 **The keep-alive notification.** While the service is enabled the app holds a
 silent, ongoing notification. Cleaner heuristics generally skip a process that
@@ -222,6 +231,12 @@ hardcoding them fails silently on exactly the devices that need them. Instead it
 uses the two destinations AOSP guarantees — the platform's own battery-exemption
 dialog, and the **App info** page every skin hangs its own power controls off —
 and asks you to confirm the step it cannot verify.
+
+**The setup gate.** The app will not lead you to the accessibility switch until
+the checks pass, because enabling the service on a device that will kill it is
+how you end up trusting an app that stopped working days ago. It gates its own
+screen only — enabling from system Settings still works, and is reported as
+**NOT CONFIGURED** rather than pretended away.
 
 [dontkillmyapp.com](https://dontkillmyapp.com) tracks these per brand and per OS
 version, and is a better reference than anything pinned here.
@@ -315,19 +330,51 @@ None of these are implemented:
 
 ```
 app/src/main/
-├── AndroidManifest.xml                       # service + activity declarations
+├── AndroidManifest.xml                        # permissions, queries, components
 ├── java/dev/javid/adskipper/
-│   ├── SkipAdAccessibilityService.java       # detection + click logic
-│   ├── KeepAliveService.java                 # ongoing notification, nothing else
-│   ├── Preflight.java                        # setup checks, and what cannot be checked
-│   └── MainActivity.java                     # status screen + setup gate
+│   ├── SkipAdAccessibilityService.java        # detection + click logic, blind detection
+│   ├── KeepAliveService.java                  # ongoing notification, three states
+│   ├── Preflight.java                         # setup checks, and what cannot be checked
+│   └── MainActivity.java                      # status screen + setup gate
 └── res/
-    ├── xml/accessibility_service_config.xml  # scopes the service to YouTube
-    ├── drawable/ic_notification.xml          # status-bar glyph
-    ├── drawable/ic_launcher_background.xml   # adaptive-icon gradient
-    ├── layout/activity_main.xml
-    └── values/strings.xml
+    ├── xml/accessibility_service_config.xml   # scopes the service to YouTube
+    ├── layout/activity_main.xml               # one screen, plain platform widgets
+    ├── layout/dialog_recents_lock.xml         # body of the Recents-lock help dialog
+    ├── color/button_primary_text.xml          # enabled/disabled label colour
+    ├── drawable/
+    │   ├── ic_launcher_foreground.xml         # skip glyph, white on black
+    │   ├── ic_notification.xml                # status-bar glyph (monochrome by requirement)
+    │   ├── ic_state_ok.xml                    # check / cross / exclamation, tinted
+    │   ├── ic_state_bad.xml                   #   at the point of use rather than
+    │   ├── ic_state_warn.xml                  #   baked with a colour
+    │   ├── illus_recents_lock.xml             # drawn, not screenshotted (see below)
+    │   ├── bg_card.xml                        # rounded card + outline
+    │   ├── bg_status_pill.xml                 # pill behind the status label
+    │   ├── bg_button_primary.xml              # filled, with a real disabled state
+    │   └── bg_button_secondary.xml            # outlined
+    └── values/
+        ├── strings.xml
+        ├── styles.xml                         # AppTheme (no action bar) + headings
+        ├── colors.xml                         # light palette
+        └── ../values-night/colors.xml         # dark palette
 ```
+
+The UI uses plain platform widgets throughout — no Material Components, no
+CardView, no AndroidX at all — because the build has no dependencies and adding
+one for rounded corners is not a trade worth making. Cards are `LinearLayout`s
+with a shape drawable; the state markers are vectors tinted at the point of use.
+
+The Recents-lock illustration is a diagram rather than a screenshot, on
+purpose. That control is a padlock on some devices, a pin on others, and a menu
+item on others again — a photograph of any one of them would be wrong for most
+people looking at it, and would also be the first raster asset in the project.
+The dialog says as much underneath the drawing.
+
+The theme is `DeviceDefault.DayNight`, so **every colour is defined twice**, in
+`values/colors.xml` and `values-night/colors.xml`. A colour added to only one of
+them renders unreadable in the other mode. The state colours are separately
+tuned rather than reused: the light-mode greens and reds lose contrast against
+dark backgrounds.
 
 ## License
 

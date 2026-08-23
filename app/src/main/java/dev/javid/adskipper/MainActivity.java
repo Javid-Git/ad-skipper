@@ -3,6 +3,7 @@ package dev.javid.adskipper;
 import android.Manifest;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.Intent;
@@ -11,6 +12,8 @@ import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.view.View;
@@ -18,6 +21,7 @@ import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityManager;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.CompoundButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -81,6 +85,19 @@ public class MainActivity extends Activity {
     private CheckBox attestView;
     private Button openSettingsButton;
 
+    /** Held so refresh() can detach it while setting the box programmatically. */
+    private CompoundButton.OnCheckedChangeListener attestListener;
+
+    /**
+     * When to re-read the checks after this screen regains focus. Spread out
+     * because the commit is not synchronous with the settings screen closing,
+     * and how late it lands varies by device.
+     */
+    private static final long[] RECHECK_DELAYS_MS = {300L, 1_000L, 2_500L};
+
+    private final Handler recheckHandler = new Handler(Looper.getMainLooper());
+    private final Runnable recheckRunnable = this::refresh;
+
     /** Asked at most once per launch, so returning from Settings does not nag. */
     private boolean notificationPermissionRequested;
 
@@ -101,18 +118,18 @@ public class MainActivity extends Activity {
 
         openSettingsButton.setOnClickListener(v -> openAccessibilitySettings());
         findViewById(R.id.open_app_info).setOnClickListener(v -> openAppInfo());
+        findViewById(R.id.recents_help).setOnClickListener(v -> showRecentsLockHelp());
 
-        attestView.setOnCheckedChangeListener((v, checked) -> {
+        attestListener = (v, checked) -> {
             Preflight.setAttested(this, checked);
             refresh();
-        });
+        };
+        attestView.setOnCheckedChangeListener(attestListener);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        // Re-read everything on every resume, so returning from any settings
-        // screen reflects what was just changed.
         refresh();
 
         if (isServiceBound()) {
@@ -122,6 +139,43 @@ public class MainActivity extends Activity {
             // but a start from a resumed activity never is.
             KeepAliveService.start(this);
         }
+    }
+
+    /**
+     * Re-checks whenever this screen regains focus, then again shortly after.
+     *
+     * <p>Focus alone was not enough. Settings actions are frequently handled by
+     * the device's own power-management screen rather than the platform dialog,
+     * and the underlying value is not always committed by the time this
+     * activity comes back — so the immediate re-read returns the old answer and
+     * the checklist appears not to have noticed. Visiting the same screen twice
+     * "fixed" it only because the second return read a value written during the
+     * first.
+     *
+     * <p>Rather than guess at one delay, it re-reads on a short schedule. Each
+     * pass is a few binder calls and stops as soon as the screen loses focus.
+     */
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        cancelRecheck();
+        if (!hasFocus) {
+            return;
+        }
+        refresh();
+        for (long delay : RECHECK_DELAYS_MS) {
+            recheckHandler.postDelayed(recheckRunnable, delay);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        cancelRecheck();
+        super.onPause();
+    }
+
+    private void cancelRecheck() {
+        recheckHandler.removeCallbacks(recheckRunnable);
     }
 
     private void refresh() {
@@ -135,7 +189,11 @@ public class MainActivity extends Activity {
         statusPillView.getBackground().mutate().setTint(getColor(state.pillColorRes));
 
         boolean attested = Preflight.isAttested(this);
+        // Detach the listener first: refresh() now runs on every focus change,
+        // and setChecked would otherwise call back into refresh().
+        attestView.setOnCheckedChangeListener(null);
         attestView.setChecked(attested);
+        attestView.setOnCheckedChangeListener(attestListener);
         attestIconView.setImageResource(
                 attested ? R.drawable.ic_state_ok : R.drawable.ic_state_warn);
 
@@ -169,6 +227,35 @@ public class MainActivity extends Activity {
                 v -> openNotificationSettings());
         addRow(R.string.preflight_battery, Preflight.isBatteryUnrestricted(this),
                 v -> openBatterySettings());
+        addRecheckButton();
+    }
+
+    /**
+     * A manual re-read, always available.
+     *
+     * <p>The automatic passes cover the normal case, but they are a guess at
+     * how long a device takes to commit a setting. This is the guarantee: if
+     * something was changed and the list still disagrees, one tap settles it
+     * rather than leaving the user to wonder whether the app is broken.
+     */
+    private void addRecheckButton() {
+        Button recheck = new Button(this);
+        recheck.setText(R.string.preflight_recheck);
+        recheck.setAllCaps(false);
+        recheck.setTextSize(14f);
+        recheck.setTextColor(getColor(R.color.accent));
+        recheck.setBackgroundResource(R.drawable.bg_button_secondary);
+        recheck.setStateListAnimator(null);
+        recheck.setOnClickListener(v -> {
+            refresh();
+            Toast.makeText(this, R.string.preflight_rechecked, Toast.LENGTH_SHORT).show();
+        });
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        params.topMargin = dp(4);
+        params.bottomMargin = dp(12);
+        recheck.setLayoutParams(params);
+        checklistView.addView(recheck);
     }
 
     /**
@@ -213,12 +300,32 @@ public class MainActivity extends Activity {
         button.setBackgroundResource(R.drawable.bg_button_primary);
         button.setStateListAnimator(null);
         button.setOnClickListener(fix);
+        // Full width of the card. It was previously inset to line up under the
+        // label, which just made it look like it had failed to lay out.
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
-        params.leftMargin = dp(34);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
         params.bottomMargin = dp(14);
         button.setLayoutParams(params);
         checklistView.addView(button);
+    }
+
+    /**
+     * Shows what locking an app in Recents looks like.
+     *
+     * <p>The illustration is a drawing rather than a screenshot, because this
+     * control genuinely differs between devices — padlock, pin, a menu item —
+     * and a screenshot of one of them would be wrong for most people reading
+     * it. The dialog says so rather than implying an exact match.
+     *
+     * <p>Platform {@link AlertDialog}, so this adds no dependency.
+     */
+    private void showRecentsLockHelp() {
+        View content = getLayoutInflater().inflate(R.layout.dialog_recents_lock, null);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.recents_lock_title)
+                .setView(content)
+                .setPositiveButton(R.string.dialog_got_it, null)
+                .show();
     }
 
     private int dp(int value) {

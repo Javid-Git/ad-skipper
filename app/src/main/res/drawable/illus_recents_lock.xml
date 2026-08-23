@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+    A generic Recents screen: three app cards, the middle one pulled down to
+    reveal a padlock.
+
+    Drawn rather than photographed on purpose. A screenshot would be of one
+    manufacturer's Recents, and this control looks different on every skin —
+    padlock, pin, "lock" menu item — so a real image would be wrong for most
+    people looking at it. A diagram shows the idea without claiming to be the
+    exact screen. It is also a vector, so the project still ships no raster
+    assets at any density.
+
+    Colours reference the palette, so this follows light and dark mode.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="280dp"
+    android:height="180dp"
+    android:viewportWidth="280"
+    android:viewportHeight="180">
+
+    <!-- Left card, dimmed: just context for what screen this is. -->
+    <path
+        android:fillColor="@color/outline"
+        android:pathData="M14,46 h44 a8,8 0 0 1 8,8 v76 a8,8 0 0 1 -8,8 h-44 a8,8 0 0 1 -8,-8 v-76 a8,8 0 0 1 8,-8 z" />
+
+    <!-- Right card, dimmed. -->
+    <path
+        android:fillColor="@color/outline"
+        android:pathData="M222,46 h44 a8,8 0 0 1 8,8 v76 a8,8 0 0 1 -8,8 h-44 a8,8 0 0 1 -8,-8 v-76 a8,8 0 0 1 8,-8 z" />
+
+    <!-- The pull-down gesture above the focused card. -->
+    <path
+        android:fillColor="@color/accent"
+        android:pathData="M140,6 m-4,0 a4,4 0 1 0 8,0 a4,4 0 1 0 -8,0 z" />
+    <path
+        android:fillColor="@color/accent"
+        android:pathData="M137,16 h6 v10 h7 l-10,12 l-10,-12 h7 z" />
+
+    <!-- Focused card. -->
+    <path
+        android:fillColor="@color/surface_card"
+        android:strokeColor="@color/accent"
+        android:strokeWidth="2"
+        android:pathData="M86,52 h108 a10,10 0 0 1 10,10 v96 a10,10 0 0 1 -10,10 h-108 a10,10 0 0 1 -10,-10 v-96 a10,10 0 0 1 10,-10 z" />
+
+    <!-- Padlock badge, centred on the focused card. -->
+    <path
+        android:fillColor="@color/accent"
+        android:pathData="M140,104 m-26,0 a26,26 0 1 0 52,0 a26,26 0 1 0 -52,0 z" />
+
+    <!-- Shackle. -->
+    <path
+        android:strokeColor="@color/text_on_accent"
+        android:strokeWidth="3.4"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M132,97 v-6 a8,8 0 0 1 16,0 v6" />
+
+    <!-- Body. -->
+    <path
+        android:fillColor="@color/text_on_accent"
+        android:pathData="M128,97 h24 a3,3 0 0 1 3,3 v14 a3,3 0 0 1 -3,3 h-24 a3,3 0 0 1 -3,-3 v-14 a3,3 0 0 1 3,-3 z" />
+
+    <!-- Two title lines on the card, to read as an app entry. -->
+    <path
+        android:fillColor="@color/outline"
+        android:pathData="M100,140 h80 a3,3 0 0 1 0,6 h-80 a3,3 0 0 1 0,-6 z" />
+    <path
+        android:fillColor="@color/outline"
+        android:pathData="M112,151 h56 a3,3 0 0 1 0,6 h-56 a3,3 0 0 1 0,-6 z" />
+</vector>

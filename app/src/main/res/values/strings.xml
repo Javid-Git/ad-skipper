@@ -35,7 +35,7 @@
     <string name="settings_unavailable">Could not open Accessibility settings on this device. Open Settings and look for Accessibility &gt; Installed apps &gt; Ad Skipper.</string>
 
     <string name="open_accessibility_settings">Open Accessibility settings</string>
-    <string name="open_app_info">Open App info (battery settings)</string>
+    <string name="open_app_info">Open App info</string>
     <string name="app_info_unavailable">Could not open App info on this device. Open Settings &gt; Apps and find Ad Skipper.</string>
     <string name="battery_settings_unavailable">Could not open battery optimisation settings. Open App info and remove any battery restriction on Ad Skipper.</string>
     <string name="notification_settings_unavailable">Could not open notification settings. Open App info &gt; Notifications and allow them for Ad Skipper.</string>
@@ -45,10 +45,13 @@
     <string name="preflight_fix">Fix this</string>
     <string name="preflight_youtube">The YouTube app is installed</string>
     <string name="preflight_notifications">Notifications are allowed (needed to warn you when it stops)</string>
-    <string name="preflight_battery">Battery restrictions are removed</string>
+    <string name="preflight_battery">Battery optimisation is off</string>
 
-    <string name="preflight_attest_heading">Step this app cannot check</string>
-    <string name="preflight_attest">I have allowed Ad Skipper to keep running in the background on this device</string>
+    <string name="preflight_recheck">Re-check now</string>
+    <string name="preflight_rechecked">Checks re-run</string>
+
+    <string name="preflight_attest_heading">Steps this app cannot check</string>
+    <string name="preflight_attest">I have locked Ad Skipper in Recents (and allowed auto-start, if this device has it)</string>
     <!--
         Stated outright. Background-execution permissions are vendor app-ops
         with no public API, and whether an app is pinned in Recents has no API
@@ -56,6 +59,19 @@
         were a real check.
     -->
     <string name="preflight_attest_note">This app cannot verify this — Android provides no way to read it. Ticking this is your confirmation, not a check the app has performed.</string>
+
+    <!-- "How do I lock it in Recents" dialog. -->
+    <string name="recents_lock_help">How do I lock it in Recents?</string>
+    <string name="recents_lock_title">Locking an app in Recents</string>
+    <string name="recents_lock_steps"><b>1.</b> Open Recents — swipe up and hold, or tap the square button.\n<b>2.</b> Pull down on the Ad Skipper card, or press and hold it.\n<b>3.</b> Tap the padlock.\n\nA locked app is skipped when you clear all apps, which is what keeps the service alive.</string>
+    <!--
+        Said plainly, because the illustration is a diagram rather than a
+        screenshot of this device. Promising an exact match would be wrong on
+        most phones.
+    -->
+    <string name="recents_lock_caveat">This is a general illustration. The control differs between devices — some use a padlock, some a pin, some a menu item called Lock. If your Recents screen has none of them, this device probably does not close apps that way.</string>
+    <string name="recents_lock_image_description">Diagram of a Recents screen with the middle app card pulled down to show a padlock</string>
+    <string name="dialog_got_it">Got it</string>
 
     <string name="preflight_gate_blocked">Accessibility cannot be enabled from here until the checks above pass. Turning the service on before the device is set up to keep it running produces an app that works briefly and then stops silently.</string>
     <string name="preflight_gate_open">All checks passed. You can now enable the accessibility service.</string>
@@ -85,5 +101,5 @@
         menu names move between OS versions, so naming them dates badly and
         misleads anyone on a build that renamed them.
     -->
-    <string name="background_tips">Some Android devices stop background apps to save power. If ads stop being skipped, open App info below and allow Ad Skipper to run in the background without restriction. If your device lets you lock an app in Recents, lock this one too.\n\nOn stock Android the system restarts the service by itself and none of this is needed.</string>
+    <string name="background_tips"><b>1. Lock it in Recents.</b> Open Recents, pull down or long-press the Ad Skipper card, and tap the padlock. On devices where "clear all apps" is a force stop, this is the only thing that survives it.\n\n<b>2. Allow auto-start</b>, if this device has such a list. Without it the system may refuse to restart the service after anything closes it, leaving it enabled but dead.\n\nOn stock Android neither is needed; the system restarts the service by itself.</string>
 </resources>
