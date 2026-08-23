@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Ad Skipper</string>
+    <string name="app_tagline">Skips YouTube ads for you</string>
+
+    <!-- Pill labels on the status card. Short by design; the body text explains. -->
+    <string name="status_label_active">ACTIVE</string>
+    <string name="status_label_not_configured">NOT CONFIGURED</string>
+    <string name="status_label_inactive">INACTIVE</string>
+    <string name="status_label_stopped">STOPPED</string>
+    <string name="status_label_off">OFF</string>
+
 
     <!-- Shown in Settings > Accessibility next to the service toggle. -->
     <string name="accessibility_service_label">Ad Skipper</string>
@@ -33,8 +42,6 @@
 
     <!-- Setup gate. -->
     <string name="preflight_heading">Setup checks</string>
-    <string name="preflight_row_pass">✔  %1$s</string>
-    <string name="preflight_row_fail">✘  %1$s</string>
     <string name="preflight_fix">Fix this</string>
     <string name="preflight_youtube">The YouTube app is installed</string>
     <string name="preflight_notifications">Notifications are allowed (needed to warn you when it stops)</string>

@@ -13,12 +13,12 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.TextUtils;
-import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityManager;
 import android.widget.Button;
 import android.widget.CheckBox;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -36,15 +36,47 @@ import java.util.List;
  *
  * <p>The gate covers this screen only. It cannot prevent someone enabling the
  * service directly in system Settings, and does not try to; that route is
- * detected instead, and reported as {@link KeepAliveService.Status#NOT_CONFIGURED}
- * in the notification.
+ * detected instead and reported as
+ * {@link KeepAliveService.Status#NOT_CONFIGURED}.
  */
 public class MainActivity extends Activity {
 
     private static final int REQUEST_POST_NOTIFICATIONS = 1;
 
+    /** What the screen is currently reporting. Drives the pill and the body text. */
+    private enum UiState {
+        ACTIVE(R.string.status_label_active, R.string.status_enabled,
+                R.drawable.ic_state_ok, R.color.state_ok, R.color.state_ok_bg),
+        NOT_CONFIGURED(R.string.status_label_not_configured, R.string.status_not_configured,
+                R.drawable.ic_state_warn, R.color.state_warn, R.color.state_warn_bg),
+        INACTIVE(R.string.status_label_inactive, R.string.status_blind,
+                R.drawable.ic_state_bad, R.color.state_bad, R.color.state_bad_bg),
+        STOPPED(R.string.status_label_stopped, R.string.status_not_running,
+                R.drawable.ic_state_bad, R.color.state_bad, R.color.state_bad_bg),
+        OFF(R.string.status_label_off, R.string.status_disabled,
+                R.drawable.ic_state_bad, R.color.state_bad, R.color.state_bad_bg);
+
+        final int labelRes;
+        final int bodyRes;
+        final int iconRes;
+        final int colorRes;
+        final int pillColorRes;
+
+        UiState(int labelRes, int bodyRes, int iconRes, int colorRes, int pillColorRes) {
+            this.labelRes = labelRes;
+            this.bodyRes = bodyRes;
+            this.iconRes = iconRes;
+            this.colorRes = colorRes;
+            this.pillColorRes = pillColorRes;
+        }
+    }
+
     private TextView statusView;
+    private TextView statusLabelView;
     private TextView gateExplanationView;
+    private ImageView statusIconView;
+    private ImageView attestIconView;
+    private View statusPillView;
     private LinearLayout checklistView;
     private CheckBox attestView;
     private Button openSettingsButton;
@@ -58,6 +90,10 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         statusView = findViewById(R.id.status);
+        statusLabelView = findViewById(R.id.status_label);
+        statusIconView = findViewById(R.id.status_icon);
+        statusPillView = findViewById(R.id.status_pill);
+        attestIconView = findViewById(R.id.attest_icon);
         gateExplanationView = findViewById(R.id.gate_explanation);
         checklistView = findViewById(R.id.checklist);
         attestView = findViewById(R.id.attest);
@@ -89,20 +125,40 @@ public class MainActivity extends Activity {
     }
 
     private void refresh() {
-        boolean bound = isServiceBound();
-        statusView.setText(statusTextRes(bound));
+        UiState state = currentUiState();
+        statusLabelView.setText(state.labelRes);
+        statusLabelView.setTextColor(getColor(state.colorRes));
+        statusView.setText(state.bodyRes);
+        statusIconView.setImageResource(state.iconRes);
+        // mutate() so tinting this pill does not recolour every other view
+        // sharing the same drawable instance.
+        statusPillView.getBackground().mutate().setTint(getColor(state.pillColorRes));
 
-        attestView.setChecked(Preflight.isAttested(this));
+        boolean attested = Preflight.isAttested(this);
+        attestView.setChecked(attested);
+        attestIconView.setImageResource(
+                attested ? R.drawable.ic_state_ok : R.drawable.ic_state_warn);
+
         buildChecklist();
 
-        // The gate. Everything verifiable has to pass and the two unverifiable
-        // steps have to be confirmed before this screen will lead anyone to the
-        // switch that turns the service on.
+        // The gate. Everything verifiable has to pass and the step that cannot
+        // be verified has to be confirmed before this screen will lead anyone
+        // to the switch that turns the service on.
         boolean configured = Preflight.isConfigured(this);
         openSettingsButton.setEnabled(configured);
         gateExplanationView.setText(configured
                 ? R.string.preflight_gate_open
                 : R.string.preflight_gate_blocked);
+    }
+
+    private UiState currentUiState() {
+        if (isServiceBound()) {
+            if (SkipAdAccessibilityService.isBlind()) {
+                return UiState.INACTIVE;
+            }
+            return Preflight.isConfigured(this) ? UiState.ACTIVE : UiState.NOT_CONFIGURED;
+        }
+        return isListedInSecureSetting() ? UiState.STOPPED : UiState.OFF;
     }
 
     /** Rebuilds the checklist rows from a fresh evaluation. */
@@ -116,52 +172,57 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * One row: a pass/fail marker, the requirement, and — when it is failing
+     * One row: a tinted state icon, the requirement, and — when it is failing
      * and there is somewhere to send the user — a button that goes straight
      * there.
      */
     private void addRow(int labelRes, boolean passing, View.OnClickListener fix) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(14), 0, passing || fix == null ? dp(14) : dp(8));
+
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(passing ? R.drawable.ic_state_ok : R.drawable.ic_state_bad);
+        icon.setLayoutParams(new LinearLayout.LayoutParams(dp(22), dp(22)));
+        row.addView(icon);
+
         TextView label = new TextView(this);
-        label.setText(getString(passing ? R.string.preflight_row_pass
-                : R.string.preflight_row_fail, getString(labelRes)));
+        label.setText(labelRes);
         label.setTextSize(15f);
-        label.setPadding(0, dp(8), 0, 0);
-        checklistView.addView(label);
+        label.setLineSpacing(dp(2), 1f);
+        label.setTextColor(getColor(passing ? R.color.text_secondary : R.color.text_primary));
+        // Set on the LayoutParams, not via a style: layout_* attributes come
+        // from the parent's LayoutParams and a style passed to the View
+        // constructor never supplies them, which left the text touching the icon.
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        labelParams.leftMargin = dp(12);
+        label.setLayoutParams(labelParams);
+        row.addView(label);
+
+        checklistView.addView(row);
 
         if (passing || fix == null) {
             return;
         }
         Button button = new Button(this);
         button.setText(R.string.preflight_fix);
+        button.setAllCaps(false);
+        button.setTextSize(14f);
+        button.setTextColor(getColor(R.color.text_on_accent));
+        button.setBackgroundResource(R.drawable.bg_button_primary);
+        button.setStateListAnimator(null);
         button.setOnClickListener(fix);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.gravity = Gravity.START;
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        params.leftMargin = dp(34);
+        params.bottomMargin = dp(14);
         button.setLayoutParams(params);
         checklistView.addView(button);
     }
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-
-    /**
-     * Four states, because "enabled", "running" and "working" are three
-     * different facts, and every gap between them is a way this app can look
-     * fine while doing nothing.
-     */
-    private int statusTextRes(boolean bound) {
-        if (bound) {
-            if (SkipAdAccessibilityService.isBlind()) {
-                return R.string.status_blind;
-            }
-            return Preflight.isConfigured(this)
-                    ? R.string.status_enabled
-                    : R.string.status_not_configured;
-        }
-        return isListedInSecureSetting()
-                ? R.string.status_not_running
-                : R.string.status_disabled;
     }
 
     /**
@@ -175,7 +236,7 @@ public class MainActivity extends Activity {
         }
 
         // Reflects bound services, not the stored setting -- which is exactly
-        // the distinction statusTextRes depends on.
+        // the distinction currentUiState depends on.
         List<AccessibilityServiceInfo> enabled = manager.getEnabledAccessibilityServiceList(
                 AccessibilityServiceInfo.FEEDBACK_ALL_MASK);
         if (enabled == null) {
@@ -238,12 +299,12 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Opens this app's App info page, where every vendor skin hangs its own
-     * per-app power controls.
+     * Opens this app's App info page, where every skin hangs its own per-app
+     * power controls.
      */
     private void openAppInfo() {
         start(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                Uri.fromParts("package", getPackageName(), null)),
+                        Uri.fromParts("package", getPackageName(), null)),
                 R.string.app_info_unavailable);
     }
 
@@ -252,12 +313,11 @@ public class MainActivity extends Activity {
      *
      * <p>{@code ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS} sets exactly the
      * value {@link Preflight#isBatteryUnrestricted} reads, so the fix and the
-     * check are the same thing. The plain
-     * {@code ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS} list was worse on two
+     * check are the same thing. The plain settings-list action was worse on two
      * counts: it drops the user into an unfiltered list to find the app
      * themselves, and on skins that keep their own separate battery screen it
-     * is not the control they are shown elsewhere — so the check could stay
-     * red after they had apparently just fixed it.
+     * is not the control they are shown elsewhere — so the check could stay red
+     * after they had apparently just fixed it.
      */
     private void openBatterySettings() {
         start(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
@@ -272,8 +332,8 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Not every ROM resolves every settings action — some vendor skins bury
-     * them, and restricted profiles hide them entirely. An unhandled
+     * Not every ROM resolves every settings action — some skins bury them, and
+     * restricted profiles hide them entirely. An unhandled
      * ActivityNotFoundException would crash the app on tap.
      */
     private void start(Intent intent, int unavailableMessage) {

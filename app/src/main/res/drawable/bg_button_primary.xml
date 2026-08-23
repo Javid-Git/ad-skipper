@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Disabled state is explicit: the gate leaves this button off most of the time. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="false">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/accent_disabled" />
+            <corners android:radius="12dp" />
+        </shape>
+    </item>
+    <item>
+        <ripple xmlns:android="http://schemas.android.com/apk/res/android"
+            android:color="#33FFFFFF">
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/accent" />
+                    <corners android:radius="12dp" />
+                </shape>
+            </item>
+        </ripple>
+    </item>
+</selector>

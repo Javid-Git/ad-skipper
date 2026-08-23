@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Dark counterparts. Every colour in values/colors.xml that the UI uses is
+    redefined here; the theme is DeviceDefault.DayNight, so a colour defined
+    only in the light file renders unreadable at night.
+
+    The state colours are lightened rather than reused: the light-mode greens
+    and reds are tuned for white backgrounds and lose contrast on dark ones.
+-->
+<resources>
+    <color name="surface">#FF0E1116</color>
+    <color name="surface_card">#FF181C23</color>
+    <color name="outline">#FF2B313B</color>
+
+    <color name="text_primary">#FFF1F3F6</color>
+    <color name="text_secondary">#FF9BA4B0</color>
+    <color name="text_on_accent">#FFFFFFFF</color>
+
+    <color name="accent">#FF5B8DEF</color>
+    <color name="accent_disabled">#FF39404B</color>
+
+    <color name="state_ok">#FF4ADE80</color>
+    <color name="state_warn">#FFFBBF3F</color>
+    <color name="state_bad">#FFF87171</color>
+
+    <color name="state_ok_bg">#264ADE80</color>
+    <color name="state_warn_bg">#26FBBF3F</color>
+    <color name="state_bad_bg">#26F87171</color>
+</resources>

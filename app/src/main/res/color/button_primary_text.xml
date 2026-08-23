@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The primary button spends most of its life disabled, because the setup gate
+    holds it shut. Greying the label as well as the fill makes that read as
+    "not yet" rather than "broken".
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="false" android:color="@color/text_secondary" />
+    <item android:color="@color/text_on_accent" />
+</selector>
