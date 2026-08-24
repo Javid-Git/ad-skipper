@@ -20,7 +20,8 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * Watches YouTube's UI and clicks the "Skip Ad" control as soon as it appears.
+ * Watches YouTube's UI, clicks the "Skip Ad" control as soon as it appears, and
+ * silences the music stream while an ad that has no such control is playing.
  *
  * <p>The service uses accessibility events for prompt wakeups and an adaptive
  * foreground monitor as a safety net. It scans about once per second while
@@ -40,6 +41,10 @@ import java.util.Locale;
  *   <li>It reads the on-screen node tree. It never types, scrolls, or swipes,
  *       and the only action it performs is a click on a node it identified as
  *       the skip control (using the node action or that node's exact bounds).</li>
+ *   <li>While an ad is on screen it mutes the music stream, and unmutes it when
+ *       the ad ends. That is the only thing it changes outside YouTube's own UI,
+ *       it needs no permission, and it touches no other stream — not the ringer,
+ *       not notifications, not alarms. See {@link AdMuter}.</li>
  *   <li>The app declares no permission that grants access to data, and notably
  *       not {@code INTERNET}, so nothing it reads can leave the device. The
  *       three it does declare exist only so {@link KeepAliveService} can hold
@@ -95,6 +100,57 @@ public class SkipAdAccessibilityService extends AccessibilityService {
             "skip",
     };
 
+    /**
+     * Labels that only appear while an ad is on screen, matched as a prefix of
+     * the normalised text so decorated variants ("Skip ad in 3", "Sponsored ·
+     * Advertiser") match too.
+     *
+     * <p>These drive muting, not clicking, and that is why they are a separate
+     * list from the skip labels above: the ads worth muting are precisely the
+     * ones with no skip control to find.
+     *
+     * <p>Maintenance is the same as for the skip lists. YouTube renames and
+     * localises these, so if muting stops working, turn debug logging on, dump
+     * the tree, and add what is actually there.
+     */
+    private static final String[] UNAMBIGUOUS_AD_LABELS = {
+            "skip ad",                  // a skippable ad, before and while the button is live
+            "skip advert",
+            "sponsored",
+            "ad will end",
+            "advert will end",
+            "video will play after",    // "Video will play after ad"
+            "video will resume after",
+    };
+
+    /**
+     * The bare ad badge. Far too generic to trust on its own — a video can be
+     * titled "Ad", and one titled "Ad Astra" would match it as a prefix — so an
+     * exact match here counts only alongside an advertiser call to action from
+     * {@link #AD_CTA_LABELS}. One coincidence on a screen is ordinary; two
+     * unrelated ones at the same moment is not.
+     */
+    private static final String[] AD_BADGE_LABELS = {
+            "ad",
+            "ads",
+            "advertisement",
+    };
+
+    /**
+     * Advertiser call-to-action labels, chosen for what a video ad shows and an
+     * ordinary YouTube screen does not. Bare "download" and "install" are
+     * deliberately absent: YouTube's own player offers both, so they would
+     * corroborate nothing.
+     */
+    private static final String[] AD_CTA_LABELS = {
+            "visit advertiser",
+            "visit site",
+            "visit website",
+            "learn more",
+            "shop now",
+            "install now",
+    };
+
     /** Floor on how often the tree is scanned while a YouTube window exists. */
     private static final long SCAN_THROTTLE_MS = 200L;
 
@@ -146,6 +202,12 @@ public class SkipAdAccessibilityService extends AccessibilityService {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean pollScheduled;
+
+    /**
+     * Owns the ad mute. Created on connect, before the monitor loop starts, so
+     * nothing that runs from the loop has to check it for null.
+     */
+    private AdMuter muter;
 
     /**
      * How often the counters below are reported. They distinguish a quiet event
@@ -254,6 +316,11 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         // can be refused under Android 12's background-start rules; MainActivity
         // retries from a resumed activity, where it is always permitted.
         KeepAliveService.start(this);
+        // Before the first scan, and before anything can mute: if the previous
+        // process was killed mid-ad, the device is still muted right now and
+        // this is what gives the audio back.
+        muter = new AdMuter(this);
+        muter.recoverStaleMute();
         schedulePoll(0L);
     }
 
@@ -276,6 +343,12 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         pollScheduled = false;
         blind = false;
         blindReports = 0;
+        if (muter != null) {
+            // Explicit, because the monitor tick that would normally have
+            // released this was just cancelled two lines up. Turning the service
+            // off must never leave the device silent.
+            muter.release("the service was switched off");
+        }
         KeepAliveService.stop(this);
     }
 
@@ -316,6 +389,16 @@ public class SkipAdAccessibilityService extends AccessibilityService {
                 //
                 // youtubeVisible is false on that path, so the next scan comes
                 // at the idle interval rather than the fast one.
+                //
+                // The mute is released from here rather than from the scan, and
+                // in the same finally block, for exactly the reason above: a
+                // scan can be skipped by a throttle, a cooldown, a backoff, an
+                // unreadable window or an Error, and the audio has to come back
+                // in every one of those cases. This tick is the only thing that
+                // is guaranteed to run.
+                if (muter != null) {
+                    muter.tick(SystemClock.uptimeMillis());
+                }
                 schedulePoll(youtubeVisible ? TARGET_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS);
             }
         }
@@ -372,9 +455,11 @@ public class SkipAdAccessibilityService extends AccessibilityService {
     private void scanRoot(AccessibilityNodeInfo root) {
 
         final long now = SystemClock.uptimeMillis();
-        if (now < backoffUntil
-                || now - lastClickAt < CLICK_COOLDOWN_MS
-                || now - lastScanAt < SCAN_THROTTLE_MS) {
+        // A backoff stands the whole service down, audio included. A matcher
+        // firing often enough to trip the runaway guard is not one that should
+        // be deciding when to mute either, and skipping the scan stops the ad
+        // signal being refreshed, so the mute lapses on its own within a second.
+        if (now < backoffUntil || now - lastScanAt < SCAN_THROTTLE_MS) {
             return;
         }
         lastScanAt = now;
@@ -382,7 +467,22 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         // Nodes are deliberately not recycled. recycle() is deprecated as of
         // API 33 and the platform pools these itself; releasing a node that is
         // still referenced throws, which is a worse failure than the churn.
-        AccessibilityNodeInfo label = findSkipNode(root);
+        Scan scan = scan(root);
+
+        // Deliberately ahead of the click cooldown rather than behind it. The
+        // cooldown exists to stop a second click landing on whatever replaced
+        // the button, and has nothing to say about audio: an ad that starts
+        // during those 1.5s should still be muted. The cost is that a scan now
+        // happens during the cooldown, where before it was skipped outright.
+        if (scan.adPlaying()) {
+            muter.onAdSignal(now);
+        }
+
+        if (now - lastClickAt < CLICK_COOLDOWN_MS) {
+            return;
+        }
+
+        AccessibilityNodeInfo label = scan.skip;
         if (label == null) {
             logTreeSnapshot(root, now);
             return;
@@ -581,12 +681,44 @@ public class SkipAdAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * Locates the skip control, using view IDs when available and otherwise
-     * falling back to text and content descriptions.
+     * What one traversal of a YouTube window found: the skip control to click,
+     * if there is one, and whether anything on screen says an ad is playing.
      *
-     * @return the matching node, or {@code null} if this screen has no skip control
+     * <p>The two answers come from one walk on purpose. Muting needs to know
+     * about ads with no skip control, so it cannot reuse the skip result — but a
+     * second traversal would double the cost of a scan that already runs every
+     * 300ms, to learn things the first walk had in front of it.
      */
-    private AccessibilityNodeInfo findSkipNode(AccessibilityNodeInfo root) {
+    private static final class Scan {
+
+        /** First skip control found, or {@code null} if this screen has none. */
+        AccessibilityNodeInfo skip;
+
+        /** A label that cannot mean anything other than an ad being on screen. */
+        boolean certainAd;
+
+        /** The bare "Ad" badge, which means nothing without {@link #cta}. */
+        boolean badge;
+
+        /** An advertiser call to action. */
+        boolean cta;
+
+        /**
+         * @return whether an ad is on screen: either a label that can only mean
+         *         an ad, or the bare badge corroborated by a call to action
+         */
+        boolean adPlaying() {
+            return certainAd || (badge && cta);
+        }
+    }
+
+    /**
+     * Locates the skip control and the ad signals, using view IDs when available
+     * and otherwise falling back to text and content descriptions.
+     */
+    private Scan scan(AccessibilityNodeInfo root) {
+        Scan scan = new Scan();
+
         for (String viewId : SKIP_VIEW_IDS) {
             List<AccessibilityNodeInfo> hits =
                     root.findAccessibilityNodeInfosByViewId(TARGET_PACKAGE + ":id/" + viewId);
@@ -595,15 +727,21 @@ public class SkipAdAccessibilityService extends AccessibilityService {
             }
             for (AccessibilityNodeInfo hit : hits) {
                 if (hit != null && hit.isVisibleToUser()) {
-                    return hit;
+                    scan.skip = hit;
+                    // A visible skip control is proof of an ad in its own right,
+                    // so this needs no corroborating label.
+                    scan.certainAd = true;
+                    return scan;
                 }
             }
         }
-        return findByLabel(root);
+
+        walkTree(root, scan);
+        return scan;
     }
 
     /** Breadth-first text and description scan, bounded by {@link #MAX_NODES_VISITED}. */
-    private AccessibilityNodeInfo findByLabel(AccessibilityNodeInfo root) {
+    private void walkTree(AccessibilityNodeInfo root, Scan scan) {
         ArrayDeque<AccessibilityNodeInfo> queue = new ArrayDeque<>();
         queue.add(root);
 
@@ -615,8 +753,20 @@ public class SkipAdAccessibilityService extends AccessibilityService {
             }
             visited++;
 
-            if (isSkipTarget(node)) {
-                return node;
+            if (node.isVisibleToUser()) {
+                String text = normalize(node.getText());
+                String description = normalize(node.getContentDescription());
+                if (!text.isEmpty() || !description.isEmpty()) {
+                    classifyAdSignal(text, description, scan);
+                    if (isSkipTarget(node, text, description)) {
+                        scan.skip = node;
+                        // The click path only needs the first match, and a
+                        // visible skip control already settles the ad question,
+                        // so the rest of the tree has nothing left to add.
+                        scan.certainAd = true;
+                        return;
+                    }
+                }
             }
 
             for (int i = 0; i < node.getChildCount(); i++) {
@@ -626,7 +776,74 @@ public class SkipAdAccessibilityService extends AccessibilityService {
                 }
             }
         }
-        return null;
+    }
+
+    /**
+     * Folds one node's labels into the ad signals for this scan.
+     *
+     * <p>Nothing here reads the node itself. An ad badge is a label on the
+     * player, not a control, so unlike {@link #isSkipTarget} there is no
+     * clickable-ancestor test available to lean on — which is why the weak
+     * signals need each other instead.
+     */
+    private static void classifyAdSignal(String text, String description, Scan scan) {
+        if (scan.certainAd) {
+            return;
+        }
+        if (startsWithAny(text, UNAMBIGUOUS_AD_LABELS)
+                || startsWithAny(description, UNAMBIGUOUS_AD_LABELS)
+                || isAdCounter(text)
+                || isAdCounter(description)) {
+            scan.certainAd = true;
+            return;
+        }
+        if (equalsAny(text, AD_BADGE_LABELS) || equalsAny(description, AD_BADGE_LABELS)) {
+            scan.badge = true;
+        }
+        if (startsWithAny(text, AD_CTA_LABELS) || startsWithAny(description, AD_CTA_LABELS)) {
+            scan.cta = true;
+        }
+    }
+
+    /**
+     * Matches the ad badge when it carries a counter or a countdown: "Ad 1 of 2",
+     * "Ads 2 of 3", "Ad · 0:12", which normalise to "ad 1 of 2", "ads 2 of 3"
+     * and "ad 0 12".
+     *
+     * <p>Structural rather than a prefix match, and that is the whole point. A
+     * prefix of {@code "ad "} would also match a video called "Ad Astra";
+     * requiring every word after the first to be digits or "of" does not.
+     */
+    private static boolean isAdCounter(String normalized) {
+        int start;
+        if (normalized.startsWith("ad ")) {
+            start = 3;
+        } else if (normalized.startsWith("ads ")) {
+            start = 4;
+        } else {
+            return false;
+        }
+
+        boolean sawNumber = false;
+        for (String word : normalized.substring(start).split(" ")) {
+            if (word.isEmpty() || "of".equals(word)) {
+                continue;
+            }
+            if (!isAllDigits(word)) {
+                return false;
+            }
+            sawNumber = true;
+        }
+        return sawNumber;
+    }
+
+    private static boolean isAllDigits(String word) {
+        for (int i = 0; i < word.length(); i++) {
+            if (!Character.isDigit(word.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -636,22 +853,14 @@ public class SkipAdAccessibilityService extends AccessibilityService {
      * ("Skip") are only trusted when the node looks like a control, including a
      * described node with a clickable ancestor, which separates it from a plain
      * video title.
+     *
+     * <p>The caller has already established that the node is visible and that
+     * at least one of the two labels is non-empty, and normalised both.
      */
-    private boolean isSkipTarget(AccessibilityNodeInfo node) {
-        if (!node.isVisibleToUser()) {
-            return false;
-        }
-
-        String text = normalize(node.getText());
-        String description = normalize(node.getContentDescription());
-        if (text.isEmpty() && description.isEmpty()) {
-            return false;
-        }
-
-        for (String label : UNAMBIGUOUS_SKIP_LABELS) {
-            if (text.startsWith(label) || description.startsWith(label)) {
-                return true;
-            }
+    private boolean isSkipTarget(AccessibilityNodeInfo node, String text, String description) {
+        if (startsWithAny(text, UNAMBIGUOUS_SKIP_LABELS)
+                || startsWithAny(description, UNAMBIGUOUS_SKIP_LABELS)) {
+            return true;
         }
 
         for (String label : AMBIGUOUS_SKIP_LABELS) {
@@ -662,6 +871,27 @@ public class SkipAdAccessibilityService extends AccessibilityService {
                 return node.isClickable()
                         || mentionsSkip(node.getViewIdResourceName())
                         || (label.equals(description) && nearestClickable(node) != null);
+            }
+        }
+        return false;
+    }
+
+    private static boolean startsWithAny(String normalized, String[] labels) {
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        for (String label : labels) {
+            if (normalized.startsWith(label)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean equalsAny(String normalized, String[] labels) {
+        for (String label : labels) {
+            if (label.equals(normalized)) {
+                return true;
             }
         }
         return false;

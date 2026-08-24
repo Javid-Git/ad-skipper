@@ -1,13 +1,16 @@
 # Ad Skipper
 
-An Android accessibility service that clicks YouTube's **Skip Ad** button for you.
-Built for hands-off moments — cooking, showering — when reaching for the phone to
-tap "Skip Ad" isn't practical.
+An Android accessibility service that clicks YouTube's **Skip Ad** button for
+you, and mutes the ads that have no such button. Built for hands-off moments —
+cooking, showering — when reaching for the phone to tap "Skip Ad" isn't
+practical, and neither is listening to thirty seconds of an ad you were never
+given a button for.
 
-**Published as source, not as an app.** There are no prebuilt APKs in this
-repository and there never will be — see [Installing this safely](#installing-this-safely)
-for why that matters more here than in most projects. Build it for your own
-device and use it there.
+**Source first.** Nothing binary is committed to this repository — `.gitignore`
+excludes `*.apk`, `*.aab` and any signing material. Signed builds are attached to
+[Releases](../../releases), but building it yourself is the better option and
+[Installing this safely](#installing-this-safely) explains why that matters more
+here than in most projects.
 
 ## How it works
 
@@ -29,6 +32,44 @@ device and use it there.
 
 The monitor does not depend on one perfectly timed content-change event. It scans
 the current YouTube window and interactive PiP windows until the control appears.
+
+### Muting the ads it cannot skip
+
+A bumper or non-skippable ad has no button, so there is nothing for the steps
+above to click. The loudness is still the actual complaint, and that part does
+not need a button.
+
+The same scan that looks for the skip control also decides whether an ad is on
+screen at all, and while one is, the **media stream is muted** and unmuted again
+as the ad ends. It is one pass over the tree, not two — muting cannot reuse the
+skip result, because the ads worth muting are exactly the ones with no skip
+control to find.
+
+- **It needs no permission.** `adjustStreamVolume` requires notification-policy
+  access only for changes that would toggle Do Not Disturb, which means the
+  ringer and notification streams. The music stream is not one of them, so the
+  manifest is unchanged — still four permissions, still no `INTERNET`.
+- **It is a real mute**, not volume-zero-and-restore. The platform keeps the
+  user's volume index, so unmuting restores exactly what was there without this
+  app storing it, and a volume key unmutes the stream — which is how you
+  override it without arguing with it.
+- **It never touches** the ringer, notifications or alarms, and it does not
+  request audio focus, which would make YouTube pause or duck instead.
+- **Every way out is automatic**: the ad ending, the ad signal going stale for
+  0.9s, YouTube closing, a volume key, a 90s ceiling on any single mute, the
+  toggle being switched off, the service being switched off, and — the one a
+  running process cannot handle — being killed mid-ad, which is why the claim is
+  written to disk and released on the next connect.
+
+It helps with skippable ads too, which was not the point but is worth knowing:
+the mute engages as soon as the ad is detected, so the five seconds you have to
+sit through before the Skip button appears are silent as well.
+
+There is a switch for it on the app screen, on by default. Detection is
+deliberately conservative: a label that can only mean an ad ("Sponsored", "Skip
+ad in 3", "Ad 1 of 2") is trusted on its own, while the bare "Ad" badge only
+counts alongside an advertiser call to action, because a video can be *titled*
+"Ad".
 
 ## Requirements
 
@@ -62,7 +103,8 @@ gradlew.bat assembleDebug     # Windows
 ```
 
 The APK lands at `app/build/outputs/apk/debug/app-debug.apk`, and the current
-debug build comes out around 71 KB. Android Studio uses the wrapper by default,
+debug build comes out around 84 KB — 8 KB of that is ad muting, measured against
+a build of the previous commit. Android Studio uses the wrapper by default,
 so opening the project directory there works too.
 
 If you'd rather use Android Studio, just open the project directory — it's a
@@ -78,13 +120,29 @@ That is not boilerplate caution. An accessibility service can read everything on
 your screen and act on your UI. Handing that privilege to a binary you did not
 compile is handing over your banking app, your messages, and your passwords, on
 trust. There is no way to tell from the outside whether an APK matches the source
-next to it. So this repo ships no releases, and if you ever find one claiming to
-be this project, don't run it.
+next to it.
+
+If you do install a release build, check who signed it before you trust it:
+
+```bash
+apksigner verify --print-certs ad-skipper-v1.1.apk
+```
+
+It must print `CN=Javid Alizada` with this certificate SHA-256:
+
+```
+59fe9a47f86b3e0533e5ab69606ef49a413e02485710d524b2de20f4480aefca
+```
+
+That fingerprint is the signing key, not the file, so it is the same for every
+release and does not need re-publishing each time. An APK claiming to be this
+project that reports anything else was not built by its author — do not install
+it.
 
 The same reasoning cuts the other way, too: **this code is a short edit away from
 being spyware.** Widen `packageNames` to cover every app, add
 `<uses-permission android:name="android.permission.INTERNET"/>`, and the same
-roughly 1,500 lines become a screen scraper that phones home. Nothing here is novel — it
+roughly 2,200 lines become a screen scraper that phones home. Nothing here is novel — it
 is a documented Android API — but if you are reading a *fork* of this project,
 diff it against upstream before you build it, and check the manifest for added
 permissions.
@@ -101,6 +159,10 @@ It declares exactly four permissions, none of which reaches any data:
 | `FOREGROUND_SERVICE_SPECIAL_USE` | required for its service type on API 34+ | nothing |
 | `POST_NOTIFICATIONS` | show the ongoing notification | nothing |
 | `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | show the platform's own battery-exemption dialog | nothing |
+
+Ad muting adds nothing to that list. Muting the music stream needs no permission
+at all — notification-policy access is required only for streams that can toggle
+Do Not Disturb, and the music stream cannot.
 
 None of the four maps to a supplementary GID or to a runtime data permission.
 **`INTERNET` is deliberately absent**, which is the one that matters: without it
@@ -269,6 +331,19 @@ Then a skip logs the full node: `Skipped ad [id=... class=... text=... desc=...]
 The property resets on reboot. See [SECURITY.md](SECURITY.md) for exactly what
 the app reads, what it cannot reach, and what it costs in RAM.
 
+Muting logs both ends of every mute, with the reason it was released, and never
+any screen content:
+
+```
+I AdSkipper: Muted the music stream for an ad.
+I AdSkipper: Restored the music stream (the ad is over).
+```
+
+To check it on a non-skippable ad specifically, watch for those two lines around
+a bumper — there will be no `Skipped ad` between them, because there was no
+button. If the first line never appears, the ad's labels are not in the ad lists
+yet; dump the tree as below and add what is there.
+
 ## When YouTube changes its UI
 
 This is the expected maintenance burden. YouTube renames view IDs and relabels
@@ -303,12 +378,35 @@ video merely *titled* "Skip" and open it. Labels are normalised to lowercase
 words before comparison, so `SKIP AD` and `Skip Ad ›` both reduce to `skip ad`
 and neither needs its own entry.
 
+Muting has its own three lists in the same file, for the same reason and with the
+same maintenance story. They answer a different question — *is an ad on screen at
+all* — which is why they are separate from the skip lists above:
+
+| List | Use it for | Trusted on its own? |
+| --- | --- | --- |
+| `UNAMBIGUOUS_AD_LABELS` | Text that can only appear during an ad, e.g. `sponsored`, `skip ad in 3` | Yes — matched as a prefix |
+| `AD_BADGE_LABELS` | The bare badge: `ad`, `ads`, `advertisement` | No — exact match, and only alongside a call to action |
+| `AD_CTA_LABELS` | Advertiser calls to action, e.g. `visit advertiser` | No — only as corroboration for the badge |
+
+The badge is split off for the same reason `skip` is: a video can be *titled*
+"Ad", and one titled "Ad Astra" would match `ad ` as a prefix. So the badge needs
+a second, unrelated signal on the same screen, and the counter form ("Ad 1 of 2",
+"Ad · 0:12") is matched structurally instead — every word after the first has to
+be a number or `of`, which "Ad Astra" is not. Bare `download` and `install` are
+deliberately **not** calls to action: YouTube's own player offers both, so they
+would corroborate nothing.
+
 ## Limitations
 
-- **Skippable ads only.** Non-skippable and bumper ads have no button to click,
-  so nothing here can affect them.
+- **Skipping is skippable ads only.** Non-skippable and bumper ads have no button
+  to click, so nothing here can make them shorter. They are muted instead, which
+  is the most an app outside YouTube can do about them.
+- **Muting is the media stream, not YouTube.** It silences whatever is on the
+  music stream for the length of the ad, which in practice is YouTube, since it
+  is the app in front playing the ad.
 - **English labels out of the box.** View-ID matching is language-independent and
-  usually carries it, but a non-English device may need labels added.
+  usually carries the skip control, but ad detection is text-only, so a
+  non-English device needs labels added before muting works.
 - **Not a network-level ad blocker.** The ad still loads and plays for its first
   few seconds; this only presses the button you could have pressed yourself.
 - **A force stop always wins.** Some devices implement "clear all apps" as a
@@ -333,6 +431,7 @@ app/src/main/
 ├── AndroidManifest.xml                        # permissions, queries, components
 ├── java/dev/javid/adskipper/
 │   ├── SkipAdAccessibilityService.java        # detection + click logic, blind detection
+│   ├── AdMuter.java                           # mutes the media stream during ads
 │   ├── KeepAliveService.java                  # ongoing notification, three states
 │   ├── Preflight.java                         # setup checks, and what cannot be checked
 │   └── MainActivity.java                      # status screen + setup gate

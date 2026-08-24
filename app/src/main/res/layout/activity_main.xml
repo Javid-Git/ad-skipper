@@ -87,6 +87,40 @@
                 android:textSize="15sp" />
         </LinearLayout>
 
+        <!--
+            Ad muting. A switch rather than a silent default, because it is the
+            one thing here that reaches outside YouTube: it changes the device's
+            media volume.
+        -->
+        <TextView
+            style="@style/SectionHeading"
+            android:text="@string/mute_heading" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <CheckBox
+                android:id="@+id/mute_ads"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/mute_toggle"
+                android:textColor="@color/text_primary"
+                android:textSize="15sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingExtra="3dp"
+                android:paddingTop="8dp"
+                android:text="@string/mute_note"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
+        </LinearLayout>
+
         <TextView
             style="@style/SectionHeading"
             android:text="@string/preflight_heading" />

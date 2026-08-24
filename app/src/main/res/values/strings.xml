@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Ad Skipper</string>
-    <string name="app_tagline">Skips YouTube ads for you</string>
+    <string name="app_tagline">Skips YouTube ads, and silences the ones it cannot skip</string>
 
     <!-- Pill labels on the status card. Short by design; the body text explains. -->
     <string name="status_label_active">ACTIVE</string>
@@ -13,7 +13,16 @@
 
     <!-- Shown in Settings > Accessibility next to the service toggle. -->
     <string name="accessibility_service_label">Ad Skipper</string>
-    <string name="accessibility_service_description">Watches YouTube and its picture-in-picture window for a visible &quot;Skip Ad&quot; control and activates it when it appears. Reads screen content from YouTube only.</string>
+    <string name="accessibility_service_description">Watches YouTube and its picture-in-picture window for a visible &quot;Skip Ad&quot; control and activates it when it appears, and mutes the media volume while an ad is on screen. Reads screen content from YouTube only.</string>
+
+    <!--
+        Ad muting. Its own card because it is the one behaviour here that
+        changes something outside YouTube — the device's media volume — so it
+        gets a switch rather than being implied by the service being on.
+    -->
+    <string name="mute_heading">Ad audio</string>
+    <string name="mute_toggle">Silence ads while they play</string>
+    <string name="mute_note">Mutes the media volume while an ad is on screen and unmutes it as the ad ends — the only thing that helps with ads that have no Skip button. It needs no extra permission, never touches your ringer, notifications or alarms, and a volume key always overrides it. If something kills the app mid-ad, the sound is restored the next time the service starts.</string>
 
     <string name="status_enabled">Service is ON. Skippable YouTube ads will be skipped automatically.</string>
     <string name="status_disabled">Service is OFF. Turn it on to start skipping ads.</string>
