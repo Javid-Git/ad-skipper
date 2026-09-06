@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Ad Skipper</string>
-    <string name="app_tagline">Skips YouTube ads, and silences the ones it cannot skip</string>
+    <string name="app_tagline">Presses Skip Ad so you don\'t have to reach for the phone</string>
 
     <!-- Pill labels on the status card. Short by design; the body text explains. -->
     <string name="status_label_active">ACTIVE</string>
@@ -11,9 +11,14 @@
     <string name="status_label_off">OFF</string>
 
 
-    <!-- Shown in Settings > Accessibility next to the service toggle. -->
+    <!--
+        Shown in Settings > Accessibility next to the service toggle, and the
+        first thing anyone deciding whether to trust this service reads. It
+        leads with who it is for, because that is what the permission is being
+        asked for; the mechanism and the limits follow.
+    -->
     <string name="accessibility_service_label">Ad Skipper</string>
-    <string name="accessibility_service_description">Watches YouTube and its picture-in-picture window for a visible &quot;Skip Ad&quot; control and activates it when it appears, and mutes the media volume while an ad is on screen. Reads screen content from YouTube only.</string>
+    <string name="accessibility_service_description">Presses YouTube\'s &quot;Skip Ad&quot; button for you, so that watching does not require reaching the screen every few minutes — for people with limited hand movement, people recovering in bed, and anyone whose hands are occupied or out of range when an ad starts. Ads with no Skip button cannot be shortened by anything outside YouTube, so it silences those instead. It watches YouTube and its picture-in-picture window only, reads screen content from YouTube only, and the sole action it performs is pressing that one control.</string>
 
     <!--
         Ad muting. Its own card because it is the one behaviour here that
@@ -23,6 +28,15 @@
     <string name="mute_heading">Ad audio</string>
     <string name="mute_toggle">Silence ads while they play</string>
     <string name="mute_note">Mutes the media volume while an ad is on screen and unmutes it as the ad ends — the only thing that helps with ads that have no Skip button. It needs no extra permission, never touches your ringer, notifications or alarms, and a volume key always overrides it. If something kills the app mid-ad, the sound is restored the next time the service starts.</string>
+
+    <!--
+        The in-video overlay card. Separate from muting and separately
+        switchable, because it is the one feature that clicks through a menu
+        rather than pressing a single button.
+    -->
+    <string name="overlay_heading">Overlay ads</string>
+    <string name="overlay_toggle">Dismiss the &quot;Sponsored&quot; card over the video</string>
+    <string name="overlay_note">The small card that slides over the bottom of the player after an ad has no close button — only a ⋮ that opens a menu with Dismiss in it. This opens that menu and taps Dismiss for you. It only ever touches the ⋮ belonging to that card, never the advert itself, and it will not tap anything in the menu until the menu has identified itself as the ad menu. If it cannot find what it expects, it does nothing.</string>
 
     <string name="status_enabled">Service is ON. Skippable YouTube ads will be skipped automatically.</string>
     <string name="status_disabled">Service is OFF. Turn it on to start skipping ads.</string>

@@ -19,6 +19,14 @@
                           for YouTube controls that refuse ACTION_CLICK.
     notificationTimeout - coalesces YouTube's very chatty content-change events;
                           polling remains the safety net when events are sparse.
+    isAccessibilityTool - declares what this actually is: a service whose whole
+                          purpose is performing an interaction on behalf of
+                          someone who cannot perform it themselves. It is not a
+                          claim made for the sake of it — pressing Skip Ad is
+                          the only thing this service does. The platform uses it
+                          to decide how the service is presented in Settings,
+                          and it is what separates a genuine assistive tool from
+                          an app that merely holds the same permission.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowContentChanged|typeWindowStateChanged"
@@ -26,6 +34,7 @@
     android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
+    android:isAccessibilityTool="true"
     android:description="@string/accessibility_service_description"
     android:notificationTimeout="100"
     android:packageNames="com.google.android.youtube"

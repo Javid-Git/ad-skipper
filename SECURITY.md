@@ -8,8 +8,9 @@ so you can re-check it yourself.
 ## The short version
 
 > It watches one app, reads what is on screen while that app is in the
-> foreground (including YouTube picture-in-picture), performs exactly one click
-> on the Skip Ad button, and mutes the media stream while an ad is on screen.
+> foreground (including YouTube picture-in-picture), clicks the Skip Ad button,
+> mutes the media stream while an ad is on screen, and dismisses the "Sponsored"
+> card that covers the video by opening that card's own menu and tapping Dismiss.
 > Its four permissions exist only to show an ongoing notification and the
 > platform's own battery dialog, and grant no access to data. Muting needs none
 > at all. It does not have `INTERNET`, so the Android kernel will not let it open
@@ -22,7 +23,7 @@ so you can re-check it yourself.
 | **Apps it sees** | `com.google.android.youtube`, and nothing else. `packageNames` filters events from every other app, and the adaptive monitor checks a window's package before traversing its node tree. |
 | **When it runs** | A low-rate package check runs about once per second; while a YouTube or YouTube PiP window exists, the node tree is scanned about every 300ms. |
 | **What it reads** | The accessibility node tree of YouTube windows: the text, content descriptions, view IDs, bounds and clickable/enabled flags of on-screen views. This is the same information TalkBack reads aloud. |
-| **What it changes** | Two things. A node click, or one exact-bounds tap, on a single skip control it identified — and the mute state of `STREAM_MUSIC` while an ad is on screen, released as the ad ends. Nothing else: not the ringer, notification or alarm streams, not the volume index (a real mute leaves that to the platform), and no other app's settings. |
+| **What it changes** | Three things. (1) A node click, or one exact-bounds tap, on a single skip control it identified. (2) The mute state of `STREAM_MUSIC` while an ad is on screen, released as the ad ends — not the ringer, notification or alarm streams, and not the volume index, which a real mute leaves to the platform. (3) For the overlay card: a click on that card's own options control, then a click on the Dismiss entry of the menu that opens, and a Back if that menu has no Dismiss entry. Nothing else, and no other app's settings. |
 | **What it shows** | One silent, ongoing notification, for exactly as long as the accessibility service is connected. It carries no screen content and does no work; it exists to be visible, and to say which of three things is true: **active**, **NOT CONFIGURED**, or **INACTIVE**. See [Resource cost](#resource-cost). |
 
 `flagIncludeNotImportantViews` is set, which widens the tree it reads *within
@@ -39,11 +40,12 @@ would otherwise be invisible to the service.
 | Screenshots | Requires `canTakeScreenshot` / `ACTION_TAKE_SCREENSHOT`. Not declared, not used. |
 | Notifications | Requires the `typeNotificationStateChanged` event type. Not registered. |
 | Other apps' screens | Events are excluded by `packageNames`; polled windows are package-checked before their trees are traversed or clicked. |
-| Typing, swiping, scrolling, back/home | The code performs no gesture other than the one exact-bounds fallback tap on the matched skip control. |
+| Typing, swiping, scrolling, home, recents | Never. The only gesture is the one exact-bounds fallback tap on the matched skip control. |
+| Back, other than to close its own menu | `GLOBAL_ACTION_BACK` is used in exactly one place: closing the ad options menu that this app opened, and only while that menu is confirmed on screen by one of its own labels. It is never pressed speculatively, because a blind Back could navigate YouTube out of the video. |
 | Files, contacts, accounts, clipboard, camera, mic, location | All require permissions it does not declare. |
 | Audio content, and every stream but one | Muting sets a stream's mute flag. It cannot read, record, capture or route audio — `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS` are both absent — and the only stream it touches is `STREAM_MUSIC`. It does not request audio focus either, which would let it pause other apps' playback. |
 | Backup / cloud sync of app data | `allowBackup="false"` in the manifest. |
-| Anything stored on disk | Three booleans in `SharedPreferences`: whether you confirmed the step the app cannot verify, whether ad muting is switched on, and whether a mute is currently held. The last one is on disk for one reason — a process killed mid-ad has to be able to give the sound back when it restarts, and an in-memory flag is exactly what does not survive that. Nothing else is written. |
+| Anything stored on disk | Four booleans in `SharedPreferences`: whether you confirmed the step the app cannot verify, whether ad muting is switched on, whether overlay-card dismissal is switched on, and whether a mute is currently held. The last one is on disk for one reason — a process killed mid-ad has to be able to give the sound back when it restarts, and an in-memory flag is exactly what does not survive that. Nothing else is written. |
 | Your screen contents in logs | Off by default. Node text is logged only after you explicitly opt in (see below). |
 
 Verify the first two yourself:
@@ -65,7 +67,7 @@ unreachable.
 The *platform* would allow an accessibility service to do much more than this —
 read every app, log keystrokes, press buttons anywhere. What limits this one is
 its configuration (one package), its permission set (four, none of which reach
-data, and no `INTERNET`), and the roughly 2,200 lines of code — comments
+data, and no `INTERNET`), and the roughly 2,800 lines of code — comments
 included — that you can read in one sitting. That is a meaningful boundary, but it is a
 boundary you are trusting **this build** to hold. Which is exactly why you
 should build it yourself and never sideload someone else's APK of it.
@@ -86,14 +88,17 @@ read a YouTube window's node tree
         │
         ├─ is this window's package YouTube?  ─── no ──▶ inspect the next window
         ▼
-one walk over the tree, answering two questions
+one walk over the tree, answering three questions
         │
         ├── is an ad on screen?
-        │      ├─ a label that can only mean one: "sponsored", "skip ad in 3"
+        │      ├─ a label that can only mean one: "skip ad in 3", "ad will end"
         │      ├─ a counter: "Ad 1 of 2", "Ad · 0:12"      ◀── matched structurally
         │      └─ a bare "Ad" badge *and* an advertiser call to action
         │             │
         │             └──▶ mute STREAM_MUSIC, or leave it muted
+        │
+        ├── is the overlay card on screen?
+        │      └─ a "Sponsored" label  ──▶ the two-step sequence below
         │
         └── where is the skip control?
                ├─ 1. by view ID: skip_ad_button, ...       ◀── optional when present
@@ -116,6 +121,36 @@ performAction(ACTION_CLICK)
 The click cooldown sits *below* the ad check on purpose. It exists to stop a
 second click landing on whatever replaced the button, and it has nothing to say
 about audio: an ad starting inside those 1.5s should still be muted.
+
+The same walk notes a `Sponsored` label, which is the in-video overlay card
+rather than an ad being played. That runs its own two-step sequence, and every
+unrecognised step ends it:
+
+```
+a "Sponsored" label was seen in the card
+        │
+        ├─ an attempt is already in flight, cooling down, or stood down?  ─── ▶ ignore
+        ▼
+find the ⋮, searching outwards from the label one ancestor at a time
+        │
+        ├─ candidate must name itself: exact label, or an overflow-ish view ID
+        │     └─ never "any clickable node in the card" — the card's other
+        │        clickable node is the advert, and clicking an advert is fraud
+        │
+        ├─ nothing named itself?  ─── ▶ do nothing, and log the card's contents
+        ▼                              under debug logging so the real ID can be added
+click it, and wait up to 2.5s for the menu
+        │
+        ├─ menu shows "My Ad Center" (or another ad-menu label)?
+        │     ├─ no, and time is up   ──▶ give up. No Back: nothing has confirmed
+        │     │                           a menu is on screen to close
+        │     └─ yes
+        │          ├─ a Dismiss entry?  ─── no ──▶ Back, to close the menu we opened
+        │          ▼
+        │        click Dismiss ──▶ done, and 15s before the next attempt
+        ▼
+3 attempts in 2 minutes without the card going away ──▶ stand down for 10 minutes
+```
 
 Releasing the mute is driven by the monitor tick rather than the scan, because a
 scan can be skipped by any of the gates above and the audio has to come back
@@ -152,6 +187,12 @@ description to match.
 | You had already muted the phone yourself | The mute is not claimed, and so is never released. Taking it would mean unmuting a phone you had deliberately silenced, the moment the ad ended. |
 | Something on screen looks like an ad but is not | Bounded twice over. The bare "Ad" badge is not trusted without a second, unrelated signal, and any single mute is released after 90s regardless, after which the audio is left alone until the signal clears. The worst case is a stretch of quiet, never a stuck mute. |
 | A video is literally titled "Ad", or "Ad Astra" | Not muted on its own. The badge is matched exactly and needs an advertiser call to action alongside it; the counter form is matched structurally, so every word after "ad" has to be a number or "of", which "astra" is not. |
+| The overlay card's ⋮ is not recognised | Nothing happens — the card stays, exactly as it does today. With debug logging on, the card's own nodes are dumped so the real content description or view ID can be added to `OverlayAdDismisser`. It never falls back to clicking an unidentified control, because the other clickable thing on that card is the advert. |
+| A mis-identified ⋮ opens some other menu | Nothing is clicked in it. The sequence requires the menu to identify itself with an ad-menu label first, and gives up after 2.5s otherwise — without pressing Back, since nothing has confirmed there is a menu on screen to close. Whatever opened is left for you to close, which is the lesser of the two mistakes. |
+| The ad menu opens but has no Dismiss entry | Back, to close the menu this app opened. A sheet across the video is worse than the card it was going to remove. |
+| The card keeps coming back | Three attempts in two minutes and it stands down for ten, with a warning in the log. It does not sit there opening menus over your video. |
+| The process dies with the menu open | The menu stays open until you tap it away. Nothing is left in a bad state — the in-flight attempt lives only in memory, and a restarted service starts from scratch. |
+| You were mid-tap when it fired | Possible, and the reason both cooldowns exist. This runs at most one two-click sequence per card and then waits 15s. |
 | The device runs at a fixed volume | `isVolumeFixed()` is true, every mute API is ignored by the platform, and this says so once in the log. Skipping is unaffected. |
 | You switch muting off while an ad is muted | Released on the next tick, within about 300ms. The toggle and the service share a process, so there is nothing to propagate. |
 | The screen goes off, or YouTube goes to the background, mid-ad | The ad signal stops arriving and the stream is released about a second later. Deliberately biased that way: leaving a device muted with nothing on screen to explain why is a worse outcome than a second of ad audio. |
@@ -176,11 +217,18 @@ By default the app logs only that a skip happened, never what was on screen:
 I AdSkipper: Skipped ad (enable `adb shell setprop log.tag.AdSkipper DEBUG` for details)
 I AdSkipper: Muted the music stream for an ad.
 I AdSkipper: Restored the music stream (the ad is over).
+I AdSkipper: Opened the overlay ad's options menu.
+I AdSkipper: Dismissed the overlay ad.
 ```
 
-The mute lines carry no screen content at any log level — not the matched label,
-not the advertiser. They say that an ad was detected and why the audio came back,
-which is what you need to tell a working mute from a stuck one.
+These lines carry no screen content at any log level — not the matched label,
+not the advertiser. The one place the overlay card's own text is logged is the
+diagnostic dump for an unrecognised ⋮, which is behind the same opt-in as every
+other content log.
+
+They say that an ad was detected, why the audio came back, and how far the
+dismissal sequence got — which is what you need to tell a working mute from a
+stuck one, and a recognised card from an unrecognised one.
 
 Screen text and view IDs appear only after you opt in for a debugging session:
 

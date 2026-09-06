@@ -1,10 +1,43 @@
 # Ad Skipper
 
-An Android accessibility service that clicks YouTube's **Skip Ad** button for
-you, and mutes the ads that have no such button. Built for hands-off moments —
-cooking, showering — when reaching for the phone to tap "Skip Ad" isn't
-practical, and neither is listening to thirty seconds of an ad you were never
-given a button for.
+An Android accessibility service that presses YouTube's **Skip Ad** button on
+your behalf, silences the ads that have no such button, and clears the
+"Sponsored" card that parks itself over the video afterwards.
+
+YouTube's player assumes you have a free hand every few minutes. Not everyone
+does, and nobody does all of the time.
+
+## Who this is for
+
+The tap itself is trivial. What is not trivial is being required to produce it —
+accurately, on a small target, on the player's schedule rather than your own —
+every few minutes, for as long as you want to keep watching or listening.
+
+- **Limited hand or arm movement, a tremor, or pain** that makes a small
+  accurate tap expensive to produce, when the alternative is a video that
+  effectively stops until you produce one.
+- **Recovering in a bed or a chair**, where the phone is on a stand or a table
+  and getting to it costs more than the ad does. After surgery, through an
+  illness, late in a pregnancy — the shared part is that the phone should not be
+  something you have to negotiate with.
+- **Hands that are occupied or need to stay clean** — feeding an infant,
+  changing a dressing, cooking, mid-shower.
+- **Startle.** A phone that jumps from a quiet video to a loud ad is a minor
+  irritation for most people and genuinely not that for everyone. Muting is the
+  part of this app that answers it, and it is the part that works on the ads
+  with no button at all.
+- **Anyone who just cannot get to the phone right now.**
+
+This is what the accessibility APIs exist for: performing an interaction for
+someone who cannot perform it themselves. Every interaction here is one you were
+already being asked to perform, on a control already on screen and already meant
+to be pressed, in one app: the Skip button, and the Dismiss entry in the
+"Sponsored" card's own menu. The third thing it does — muting an ad that has no
+button — is the case where there is no interaction to perform at all, and reaching
+the volume keys is its own small negotiation with the phone.
+
+The service declares `isAccessibilityTool` because that is an accurate
+description of it, not a convenient one.
 
 **Source first.** Nothing binary is committed to this repository — `.gitignore`
 excludes `*.apk`, `*.aab` and any signing material. Signed builds are attached to
@@ -66,10 +99,52 @@ the mute engages as soon as the ad is detected, so the five seconds you have to
 sit through before the Skip button appears are silent as well.
 
 There is a switch for it on the app screen, on by default. Detection is
-deliberately conservative: a label that can only mean an ad ("Sponsored", "Skip
-ad in 3", "Ad 1 of 2") is trusted on its own, while the bare "Ad" badge only
-counts alongside an advertiser call to action, because a video can be *titled*
-"Ad".
+deliberately conservative: a label that can only mean an ad ("Skip ad in 3", "Ad
+1 of 2", "Video will play after ad") is trusted on its own, while the bare "Ad"
+badge only counts alongside an advertiser call to action, because a video can be
+*titled* "Ad".
+
+"Sponsored" is deliberately not one of those labels, and the reason is the next
+section.
+
+### Dismissing the card it leaves behind
+
+Once the ad is gone, YouTube slides a small **Sponsored** card over the bottom of
+the player, on top of the video you are trying to watch. It has no close button.
+It has a ⋮, which opens a menu containing "My Ad Center" and "Dismiss".
+
+So this does that: opens the menu, taps Dismiss. Two clicks with a menu appearing
+in between, which makes it the one feature here that is a state machine rather
+than a match-and-click — and the one that needed the most care, because the
+card's *other* clickable element is the advert itself. Clicking that would open
+the advertiser's page and register as engagement, which is click fraud committed
+on your behalf, not ad blocking.
+
+Every rule in it exists to make that impossible:
+
+- The ⋮ is only ever looked for **inside the card's own container**, found by
+  walking outwards from the "Sponsored" label one ancestor at a time and stopping
+  at the first hit. A menu button elsewhere in the player is never a candidate.
+- A candidate has to **name itself** — an exact label like `more options`, or a
+  view ID that mentions an overflow control. "Any clickable node in the card" is
+  precisely the rule that would click the advert, so it is not the rule. Exact
+  matching is also what stops `more` matching a "Learn more" call to action.
+- Nothing in the opened menu is touched until the menu has **identified itself**
+  as the ad menu by showing "My Ad Center" or similar. If something else opened,
+  this walks away from it rather than clicking blind.
+- **Back is pressed only** to close a menu this app opened and can currently see.
+  Never speculatively — a blind Back could navigate YouTube out of the video,
+  which is worse than any banner.
+- Three attempts in two minutes without the card going away and it stands down
+  for ten minutes.
+
+If the ⋮ is not recognised on your build, nothing happens: the card stays exactly
+as it is today, and with debug logging on the card's own nodes are dumped so you
+can add the real content description or view ID. It has its own switch, also on
+by default.
+
+This is the piece most likely to need maintenance, because it depends on three
+separate labels rather than one.
 
 ## Requirements
 
@@ -103,7 +178,8 @@ gradlew.bat assembleDebug     # Windows
 ```
 
 The APK lands at `app/build/outputs/apk/debug/app-debug.apk`, and the current
-debug build comes out around 84 KB — 8 KB of that is ad muting, measured against
+debug build comes out around 84 KB — 9 KB of that is ad muting and overlay
+dismissal together, measured against
 a build of the previous commit. Android Studio uses the wrapper by default,
 so opening the project directory there works too.
 
@@ -142,7 +218,7 @@ it.
 The same reasoning cuts the other way, too: **this code is a short edit away from
 being spyware.** Widen `packageNames` to cover every app, add
 `<uses-permission android:name="android.permission.INTERNET"/>`, and the same
-roughly 2,200 lines become a screen scraper that phones home. Nothing here is novel — it
+roughly 2,800 lines become a screen scraper that phones home. Nothing here is novel — it
 is a documented Android API — but if you are reading a *fork* of this project,
 diff it against upstream before you build it, and check the manifest for added
 permissions.
@@ -344,6 +420,20 @@ a bumper — there will be no `Skipped ad` between them, because there was no
 button. If the first line never appears, the ad's labels are not in the ad lists
 yet; dump the tree as below and add what is there.
 
+The overlay card logs both halves of its sequence, so a partial failure is
+obvious from which line is missing:
+
+```
+I AdSkipper: Opened the overlay ad's options menu.
+I AdSkipper: Dismissed the overlay ad.
+```
+
+If neither appears, the card's ⋮ was not recognised — turn debug logging on and
+the card's own nodes are dumped with their IDs and descriptions, ready to be
+added to `OVERFLOW_LABELS` or `OVERFLOW_ID_HINTS`. If only the first appears, the
+menu opened but never identified itself as the ad menu, or had no entry matching
+`DISMISS_LABELS`.
+
 ## When YouTube changes its UI
 
 This is the expected maintenance burden. YouTube renames view IDs and relabels
@@ -384,7 +474,7 @@ all* — which is why they are separate from the skip lists above:
 
 | List | Use it for | Trusted on its own? |
 | --- | --- | --- |
-| `UNAMBIGUOUS_AD_LABELS` | Text that can only appear during an ad, e.g. `sponsored`, `skip ad in 3` | Yes — matched as a prefix |
+| `UNAMBIGUOUS_AD_LABELS` | Text that can only appear during an ad, e.g. `skip ad in 3`, `ad will end` | Yes — matched as a prefix |
 | `AD_BADGE_LABELS` | The bare badge: `ad`, `ads`, `advertisement` | No — exact match, and only alongside a call to action |
 | `AD_CTA_LABELS` | Advertiser calls to action, e.g. `visit advertiser` | No — only as corroboration for the badge |
 
@@ -396,6 +486,28 @@ be a number or `of`, which "Ad Astra" is not. Bare `download` and `install` are
 deliberately **not** calls to action: YouTube's own player offers both, so they
 would corroborate nothing.
 
+`sponsored` is **not** in that first list, and putting it there is a mistake worth
+naming because it was made here first. It is the overlay card's label, and that
+card sits over *normal playback* — so trusting it as proof of an ad silenced the
+video the card was covering, for the full 90 seconds of the mute ceiling. It
+belongs to the dismissal path, not the muting path.
+
+The overlay card's lists live in
+[OverlayAdDismisser.java](app/src/main/java/dev/javid/adskipper/OverlayAdDismisser.java),
+since that is where the whole sequence lives:
+
+| List | Use it for | Trusted on its own? |
+| --- | --- | --- |
+| `BANNER_LABELS` | The card's own label: `sponsored` | Yes, to *find* the card — it never triggers a click by itself |
+| `OVERFLOW_LABELS` | The ⋮ on the card, e.g. `more options` | Exact match only, and only within the card's container |
+| `OVERFLOW_ID_HINTS` | View-ID fragments for the same control, e.g. `overflow` | Same, and language-independent when present |
+| `AD_MENU_MARKERS` | Proof the opened menu is the ad menu, e.g. `my ad center` | Required before anything in the menu is clicked |
+| `DISMISS_LABELS` | The entry to click, e.g. `dismiss` | Exact match, and only in an identified ad menu |
+
+The `OVERFLOW_*` pair is the one to check first if dismissal stops working, and
+the dump is easier here than elsewhere: with debug logging on, finding the card
+but not its ⋮ logs every node around it with its ID, class, text and description.
+
 ## Limitations
 
 - **Skipping is skippable ads only.** Non-skippable and bumper ads have no button
@@ -406,7 +518,12 @@ would corroborate nothing.
   is the app in front playing the ad.
 - **English labels out of the box.** View-ID matching is language-independent and
   usually carries the skip control, but ad detection is text-only, so a
-  non-English device needs labels added before muting works.
+  non-English device needs labels added before muting works. The overlay card
+  needs three labels rather than one, so it is the first thing to break on a
+  non-English build.
+- **The overlay card is removed, not blocked.** It appears, and a second or so
+  later it is dismissed. There is no way to stop it being drawn in the first
+  place from outside YouTube.
 - **Not a network-level ad blocker.** The ad still loads and plays for its first
   few seconds; this only presses the button you could have pressed yourself.
 - **A force stop always wins.** Some devices implement "clear all apps" as a
@@ -432,6 +549,7 @@ app/src/main/
 ├── java/dev/javid/adskipper/
 │   ├── SkipAdAccessibilityService.java        # detection + click logic, blind detection
 │   ├── AdMuter.java                           # mutes the media stream during ads
+│   ├── OverlayAdDismisser.java                 # dismisses the Sponsored card over the video
 │   ├── KeepAliveService.java                  # ongoing notification, three states
 │   ├── Preflight.java                         # setup checks, and what cannot be checked
 │   └── MainActivity.java                      # status screen + setup gate

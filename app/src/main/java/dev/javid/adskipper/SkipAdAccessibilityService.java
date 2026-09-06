@@ -38,9 +38,13 @@ import java.util.Locale;
  *       the framework filters every other app out before this code runs. The
  *       low-rate monitor checks only the active window package, then reads a
  *       tree only when it finds YouTube.</li>
- *   <li>It reads the on-screen node tree. It never types, scrolls, or swipes,
- *       and the only action it performs is a click on a node it identified as
- *       the skip control (using the node action or that node's exact bounds).</li>
+ *   <li>It reads the on-screen node tree. It never types, scrolls, or swipes.
+ *       It clicks the skip control it identified (using the node action or that
+ *       node's exact bounds), and — for the overlay card that covers the video
+ *       after an ad — the card's own options control and the Dismiss entry in the
+ *       menu that opens, plus Back to close that menu if Dismiss is not there.
+ *       Those three are the only actions it ever performs; see
+ *       {@link OverlayAdDismisser} for how narrowly each is identified.</li>
  *   <li>While an ad is on screen it mutes the music stream, and unmutes it when
  *       the ad ends. That is the only thing it changes outside YouTube's own UI,
  *       it needs no permission, and it touches no other stream — not the ringer,
@@ -78,6 +82,27 @@ public class SkipAdAccessibilityService extends AccessibilityService {
     };
 
     /**
+     * Player view IDs that exist only while an ad is on screen. Proof of an ad
+     * on their own, and the <em>earliest</em> proof available: they are there
+     * from the first frame, where the skip control does not appear for about
+     * five seconds and an unskippable ad never grows one at all.
+     *
+     * <p>Without these the only thing that could prove an ad was the skip
+     * control itself, so on a build that shows no countdown the mute could not
+     * engage until the instant the ad was already being skipped — measured at
+     * 83ms before the click, which is inaudible — and for an unskippable ad it
+     * never engaged at all.
+     *
+     * <p>Matched by ID rather than by the word "Sponsored" on purpose. That word
+     * also labels the promoted cards in the home feed; those nodes carry no view
+     * ID, so keying on the ID cannot mute someone who is merely scrolling.
+     */
+    private static final String[] CERTAIN_AD_VIEW_IDS = {
+            "ad_progress_text",             // "Sponsored", "Sponsored · 0:16"
+            "player_learn_more_button",
+    };
+
+    /**
      * Labels that cannot plausibly mean anything but the ad-skip control, so a
      * match here is trusted on its own. Compared as a prefix of the normalised
      * text, which also covers decorated variants like "Skip Ads (1 of 2)".
@@ -102,8 +127,8 @@ public class SkipAdAccessibilityService extends AccessibilityService {
 
     /**
      * Labels that only appear while an ad is on screen, matched as a prefix of
-     * the normalised text so decorated variants ("Skip ad in 3", "Sponsored ·
-     * Advertiser") match too.
+     * the normalised text so decorated variants ("Skip ad in 3", "Skip ads (1 of
+     * 2)") match too.
      *
      * <p>These drive muting, not clicking, and that is why they are a separate
      * list from the skip labels above: the ads worth muting are precisely the
@@ -112,11 +137,18 @@ public class SkipAdAccessibilityService extends AccessibilityService {
      * <p>Maintenance is the same as for the skip lists. YouTube renames and
      * localises these, so if muting stops working, turn debug logging on, dump
      * the tree, and add what is actually there.
+     *
+     * <p>"Sponsored" is deliberately <b>not</b> here, and that is not an
+     * oversight. It is the label on the overlay card that appears <em>over
+     * normal playback</em> once a video ad is gone, so trusting it silenced the
+     * video the card was covering until the mute ceiling tripped. It identifies
+     * that card instead — see {@link OverlayAdDismisser}. What is left are labels
+     * that only exist while an ad is actually playing: the skip control, and
+     * YouTube's own countdown wording.
      */
     private static final String[] UNAMBIGUOUS_AD_LABELS = {
             "skip ad",                  // a skippable ad, before and while the button is live
             "skip advert",
-            "sponsored",
             "ad will end",
             "advert will end",
             "video will play after",    // "Video will play after ad"
@@ -134,6 +166,18 @@ public class SkipAdAccessibilityService extends AccessibilityService {
             "ad",
             "ads",
             "advertisement",
+            // "sponsored" deliberately absent. It was added here as a text
+            // fallback for builds whose ad_progress_text shows no countdown, on
+            // the assumption that a promoted card in the home feed labels itself
+            // with the whole advertiser sentence and so could not match an exact
+            // comparison. That is not true: a feed card carries a bare
+            // "Sponsored" node of its own, and sits next to a "Shop now" button
+            // from AD_CTA_LABELS. Together those satisfied badge && cta and
+            // muted the stream for 90 seconds of ordinary scrolling, until the
+            // mute ceiling released it.
+            //
+            // CERTAIN_AD_VIEW_IDS covers the case this was meant to, and cannot
+            // fire on the feed because those cards carry no view ID.
     };
 
     /**
@@ -208,6 +252,9 @@ public class SkipAdAccessibilityService extends AccessibilityService {
      * nothing that runs from the loop has to check it for null.
      */
     private AdMuter muter;
+
+    /** Owns the overlay-card sequence. Created alongside {@link #muter}. */
+    private OverlayAdDismisser dismisser;
 
     /**
      * How often the counters below are reported. They distinguish a quiet event
@@ -321,6 +368,7 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         // this is what gives the audio back.
         muter = new AdMuter(this);
         muter.recoverStaleMute();
+        dismisser = new OverlayAdDismisser(this);
         schedulePoll(0L);
     }
 
@@ -348,6 +396,9 @@ public class SkipAdAccessibilityService extends AccessibilityService {
             // released this was just cancelled two lines up. Turning the service
             // off must never leave the device silent.
             muter.release("the service was switched off");
+        }
+        if (dismisser != null) {
+            dismisser.reset();
         }
         KeepAliveService.stop(this);
     }
@@ -396,8 +447,15 @@ public class SkipAdAccessibilityService extends AccessibilityService {
                 // unreadable window or an Error, and the audio has to come back
                 // in every one of those cases. This tick is the only thing that
                 // is guaranteed to run.
+                //
+                // The overlay-card sequence is finished from here for the same
+                // reason: once its menu is up, that menu is the active window
+                // and the card that started the sequence is no longer on screen
+                // for a scan to hand over.
                 if (muter != null) {
-                    muter.tick(SystemClock.uptimeMillis());
+                    long tickedAt = SystemClock.uptimeMillis();
+                    muter.tick(tickedAt);
+                    dismisser.tick(tickedAt);
                 }
                 schedulePoll(youtubeVisible ? TARGET_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS);
             }
@@ -476,6 +534,14 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         // happens during the cooldown, where before it was skipped outright.
         if (scan.adPlaying()) {
             muter.onAdSignal(now);
+        }
+
+        // Also ahead of the cooldown, and independent of it: the overlay card is
+        // a different piece of UI from the skip button, so a recent skip click
+        // has nothing to say about whether it should be dismissed. Its own
+        // cooldowns are in OverlayAdDismisser.
+        if (scan.banner != null) {
+            dismisser.onBanner(scan.banner, now);
         }
 
         if (now - lastClickAt < CLICK_COOLDOWN_MS) {
@@ -613,6 +679,19 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         lastClickAt = SystemClock.uptimeMillis();
         recordClick(lastClickAt);
         Log.i(TAG, "Skipped ad via " + method + " " + describe(node));
+
+        // Give the audio back now rather than waiting for the ad signals to go
+        // stale. A successful click means this ad is gone, and the release grace
+        // would otherwise silence the first 1.5s of the video the user actually
+        // wanted to hear — every single skip.
+        //
+        // The grace exists to hold one continuous mute across the gap between
+        // two ads in a break, and releasing here does give that up: in a
+        // back-to-back break, up to one poll interval of the second ad is
+        // audible before the mute is retaken. 300ms of an ad is a better trade
+        // than 1.5s of the video, and it only costs anything on a multi-ad
+        // break, where the current behaviour costs on every skip.
+        muter.release("the ad was skipped");
     }
 
     /**
@@ -621,7 +700,7 @@ public class SkipAdAccessibilityService extends AccessibilityService {
      * clickable node. The target is still constrained to a matched YouTube
      * skip node; this is not a general screen-tapping fallback.
      */
-    private boolean dispatchFallbackTap(AccessibilityNodeInfo node) {
+    boolean dispatchFallbackTap(AccessibilityNodeInfo node) {
         if (node == null || !node.isVisibleToUser() || !node.isEnabled()) {
             return false;
         }
@@ -704,6 +783,14 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         boolean cta;
 
         /**
+         * The "Sponsored" label of an in-video overlay card, if one is on screen.
+         *
+         * <p>Nothing to do with the ad signals above — this card appears over
+         * normal playback, so it is a thing to dismiss, not a thing to mute.
+         */
+        AccessibilityNodeInfo banner;
+
+        /**
          * @return whether an ad is on screen: either a label that can only mean
          *         an ad, or the bare badge corroborated by a call to action
          */
@@ -718,6 +805,16 @@ public class SkipAdAccessibilityService extends AccessibilityService {
      */
     private Scan scan(AccessibilityNodeInfo root) {
         Scan scan = new Scan();
+
+        // Ad markers before the skip control, because they appear first. This
+        // is the difference between muting an ad and muting the 83ms of it that
+        // remain once the skip button has arrived.
+        for (String viewId : CERTAIN_AD_VIEW_IDS) {
+            if (hasVisibleNode(root, viewId)) {
+                scan.certainAd = true;
+                break;
+            }
+        }
 
         for (String viewId : SKIP_VIEW_IDS) {
             List<AccessibilityNodeInfo> hits =
@@ -740,6 +837,23 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         return scan;
     }
 
+    /**
+     * @return whether the tree holds a visible node carrying this YouTube view ID
+     */
+    private boolean hasVisibleNode(AccessibilityNodeInfo root, String viewId) {
+        List<AccessibilityNodeInfo> hits =
+                root.findAccessibilityNodeInfosByViewId(TARGET_PACKAGE + ":id/" + viewId);
+        if (hits == null) {
+            return false;
+        }
+        for (AccessibilityNodeInfo hit : hits) {
+            if (hit != null && hit.isVisibleToUser()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Breadth-first text and description scan, bounded by {@link #MAX_NODES_VISITED}. */
     private void walkTree(AccessibilityNodeInfo root, Scan scan) {
         ArrayDeque<AccessibilityNodeInfo> queue = new ArrayDeque<>();
@@ -758,6 +872,10 @@ public class SkipAdAccessibilityService extends AccessibilityService {
                 String description = normalize(node.getContentDescription());
                 if (!text.isEmpty() || !description.isEmpty()) {
                     classifyAdSignal(text, description, scan);
+                    if (scan.banner == null
+                            && OverlayAdDismisser.isBannerLabel(text, description)) {
+                        scan.banner = node;
+                    }
                     if (isSkipTarget(node, text, description)) {
                         scan.skip = node;
                         // The click path only needs the first match, and a
@@ -876,7 +994,7 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         return false;
     }
 
-    private static boolean startsWithAny(String normalized, String[] labels) {
+    static boolean startsWithAny(String normalized, String[] labels) {
         if (normalized.isEmpty()) {
             return false;
         }
@@ -888,7 +1006,7 @@ public class SkipAdAccessibilityService extends AccessibilityService {
         return false;
     }
 
-    private static boolean equalsAny(String normalized, String[] labels) {
+    static boolean equalsAny(String normalized, String[] labels) {
         for (String label : labels) {
             if (label.equals(normalized)) {
                 return true;
@@ -903,7 +1021,7 @@ public class SkipAdAccessibilityService extends AccessibilityService {
      *
      * @return the node to click, or {@code null} if nothing nearby is clickable
      */
-    private AccessibilityNodeInfo nearestClickable(AccessibilityNodeInfo from) {
+    AccessibilityNodeInfo nearestClickable(AccessibilityNodeInfo from) {
         AccessibilityNodeInfo node = from;
         for (int hop = 0; node != null && hop <= MAX_ANCESTOR_HOPS; hop++) {
             if (node.isClickable() && node.isEnabled()) {
@@ -923,7 +1041,7 @@ public class SkipAdAccessibilityService extends AccessibilityService {
      * Folds a label down to lowercase words separated by single spaces, so that
      * "Skip Ad  &gt;" and "SKIP AD" both become "skip ad".
      */
-    private static String normalize(CharSequence raw) {
+    static String normalize(CharSequence raw) {
         if (TextUtils.isEmpty(raw)) {
             return "";
         }

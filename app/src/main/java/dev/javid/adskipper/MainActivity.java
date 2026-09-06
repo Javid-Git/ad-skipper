@@ -84,6 +84,7 @@ public class MainActivity extends Activity {
     private LinearLayout checklistView;
     private CheckBox attestView;
     private CheckBox muteView;
+    private CheckBox dismissOverlayView;
     private Button openSettingsButton;
 
     /** Held so refresh() can detach it while setting the box programmatically. */
@@ -116,6 +117,7 @@ public class MainActivity extends Activity {
         checklistView = findViewById(R.id.checklist);
         attestView = findViewById(R.id.attest);
         muteView = findViewById(R.id.mute_ads);
+        dismissOverlayView = findViewById(R.id.dismiss_overlay);
         openSettingsButton = findViewById(R.id.open_settings);
 
         openSettingsButton.setOnClickListener(v -> openAccessibilitySettings());
@@ -128,11 +130,15 @@ public class MainActivity extends Activity {
         };
         attestView.setOnCheckedChangeListener(attestListener);
 
-        // A plain preference, so it is not part of refresh(): nothing else in the
-        // app writes it, and the service reads it live from the same process, so
-        // turning it off releases a mute that is being held right now.
+        // Plain preferences, so they are not part of refresh(): nothing else in
+        // the app writes them, and the service reads them live from the same
+        // process, so turning muting off releases a mute being held right now.
         muteView.setChecked(AdMuter.isEnabled(this));
         muteView.setOnCheckedChangeListener((v, checked) -> AdMuter.setEnabled(this, checked));
+
+        dismissOverlayView.setChecked(OverlayAdDismisser.isEnabled(this));
+        dismissOverlayView.setOnCheckedChangeListener(
+                (v, checked) -> OverlayAdDismisser.setEnabled(this, checked));
     }
 
     @Override
